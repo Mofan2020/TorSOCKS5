@@ -101,9 +101,15 @@ curl -x socks5h://127.0.0.1:9051 https://api.ipify.org; echo
 curl -x socks5h://127.0.0.1:9051 https://www.dnsleaktest.com
 ```
 
-> 首次启动需要引导（bootstrap）。meek 网桥慢，**通常要 1～5 分钟**，
-> 期间程序会实时显示进度条：
+> 首次启动需要引导（bootstrap）。**meek 很慢**：要下载约 7 MB 的目录信息，
+> 在高延迟链路上可能需要 **10 分钟以上**。期间程序会实时显示进度：
 > `[#########-----------------]  45% requesting_descriptors  Asking for relay descriptors`
+>
+> 默认等待 300 秒，想更久就显式指定：
+> ```bash
+> torsocks5 run --ready-timeout 1800
+> ```
+> 第二次启动会复用缓存，通常快得多。
 
 ### 不想装包？直接跑
 
@@ -464,20 +470,39 @@ __OwningControllerProcess <pid>     # 控制器退出时自动关闭 tor（POSIX
 
 | 指标 | 观测值 |
 | --- | --- |
-| 引导进度 | 0% → 15%（与网桥完成 Tor 握手）约 5 秒；到 50% 约 100 秒 |
-| 隧道吞吐 | 单连接约 **30～50 KB/s**（64KB/次往返，取决于 CDN 延迟） |
-| 连接稳定性 | 8 分钟 196 次请求，**0 次硬断连** |
+| PT 握手 | tor 加载本项目插件后 1 秒内到达 `2% conn_done_pt` |
+| 与网桥完成 Tor 握手 | 约 5 秒（`15% handshake_done`） |
+| 隧道吞吐 | 单连接约 **25～50 KB/s**（64KB/次往返，取决于 CDN 延迟） |
+| 连接稳定性 | 长跑 20+ 分钟、传输 7 MB+ 数据，**0 次通道错误** |
 | CDN 错误率 | 约 15～20% 的请求被 CDN 注入 `HTTP 570`（短退避重试即可） |
+| 微描述符下载 | 约 2.4 MB/12 分钟（9458 个中的 2378 个） |
 
 **必须知道的限制**：
 
-1. **meek 很慢。** 每次 64KB 都要一个完整 HTTP 往返，吞吐上限就是 `64KB / RTT`。
-   浏览网页尚可，大文件下载会非常慢。**需要速度时请用 obfs4 / snowflake / webtunnel**，
-   本项目对这些网桥行是「透传」支持（在配置里加对应的传输插件即可）。
-2. **首次引导可能很久。** meek 首次要下载权威共识与中继描述（数 MB），
-   在高延迟链路上可能需要 3～10 分钟。用 `--ready-timeout` 调整。
-3. **网桥会失效。** 前置 CDN 可能被封或下线。表现是 4xx（快速失败并提示换桥）或长时间停在某个进度。
-4. **不支持 UDP 的深层转发。** 代理的 UDP ASSOCIATE 走 tor，但 meek 隧道只承载 TCP。
+1. **meek 很慢，这是协议本身的特性，不是本项目的实现问题。**
+   每 64KB 数据都要一个完整 HTTP 往返，吞吐上限就是 `64KB / RTT`。
+   在高延迟链路上实测约 25 KB/s。浏览网页尚可，**大文件下载会非常慢**。
+   **需要速度请用 obfs4 / snowflake / webtunnel**（本项目对这类网桥行是透传支持，
+   在配置里加上对应的传输插件即可）。
+2. **首次引导可能需要 10 分钟以上。** meek 首次要下载权威共识（~1MB）
+   与中继微描述符（9458 个，~6MB），实测 12 分钟只下了 25%。
+   之后重启会复用缓存，快得多。默认 `--ready-timeout` 为 300 秒，
+   meek 环境下建议显式调大：
+
+   ```bash
+   torsocks5 run --ready-timeout 1800
+   ```
+
+   想跳过等待、直接开始监听（请求会暂时失败）：
+
+   ```bash
+   torsocks5 run --ready-timeout 0 --keep-going
+   ```
+
+3. **网桥会失效。** 前置 CDN 可能被封或下线。表现是 4xx（快速失败并提示换桥）
+   或长时间停在某个进度。
+4. **UDP 只到 tor 这一层。** 代理的 UDP ASSOCIATE 会转发给 tor，
+   但 meek 隧道本身只承载 TCP，UDP 流量无法穿透 meek。
 5. **不是浏览器级指纹伪装。** 见上文 `utls=` 说明。
 
 ## 故障排查
@@ -511,8 +536,13 @@ cat "$(torsocks5 config path | xargs dirname)/../Caches/torsocks5/tor.log"
 | --- | --- | --- |
 | `0%` 一直不动 | 插件没起来，或网桥连不上 | 看 `-v` 日志里有没有 `CMETHOD`；换网桥 |
 | `2% conn_done_pt` | 已连上传输插件，在等网桥响应 | 网桥后端可能已下线，换桥 |
-| `30% loading_status` | 正在下权威共识（数据量大，正常） | 耐心等，或提高 `--ready-timeout` |
-| `50% loading_descriptors` | 正在下中继描述（数 MB，最慢） | 同上；meek 链路偏慢属正常 |
+| `30% loading_status` | 正在下权威共识（约 1MB） | 耐心等，或提高 `--ready-timeout` |
+| `50% ~ 99% loading_descriptors` | 正在下 9458 个中继微描述符（约 6MB，**最慢**） | 这是正常现象；meek 上可能要 10～30 分钟 |
+
+> 引导期间 tor 日志里刷屏的 `Delaying directory fetches (no running bridges known)`
+> 也是正常现象：meek 链路太慢，tor 会短暂认为桥连接不健康而暂缓拉取，
+> 随后自动继续。判断是否真的卡住，看插件的吞吐统计（配置 `[meek] verbose = true`）：
+> 只要「接收」字节数还在涨，就说明隧道是活的。
 
 ### 4xx / 5xx 状态码含义
 
