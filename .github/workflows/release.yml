@@ -117,7 +117,9 @@ jobs:
                     cp -Rf "/tmp/torbundle_inner/$EXTRA" dist/tor/ || true
                   fi
                 done
-                for LIB in /tmp/torbundle_inner/libevent-*.dylib; do
+                # 动态库：macOS 是 *.dylib，Linux 是 *.so.*，都要带上，
+                # 否则 tor 会在运行时报 "error while loading shared libraries"。
+                for LIB in /tmp/torbundle_inner/*.dylib /tmp/torbundle_inner/*.so /tmp/torbundle_inner/*.so.*; do
                   if [ -e "$LIB" ]; then cp -f "$LIB" dist/tor/ || true; fi
                 done
                 cp -f "/tmp/torbundle_inner/$BIN_NAME" "dist/tor/$BIN_NAME"

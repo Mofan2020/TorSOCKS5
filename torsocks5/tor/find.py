@@ -7,7 +7,7 @@ import platform
 import re
 import subprocess
 import sys
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 ENV_VARS = ("TORSOCKS5_TOR", "TOR_BINARY")
 
@@ -78,6 +78,36 @@ def _is_executable(path: str) -> bool:
 _VERSION_RE = re.compile(r"Tor version (\d+)\.(\d+)\.(\d+)")
 
 
+def bundled_lib_dir(path: str) -> str:
+    """若 tor 来自随包分发的 ``<程序目录>/tor/``，返回其动态库搜索目录。
+
+    官方 expert bundle 里的 tor 依赖同目录下的 libevent 等动态库，直接执行会
+    报 ``error while loading shared libraries``。这里返回该目录，供启动 tor
+    时设置 ``LD_LIBRARY_PATH`` / ``DYLD_LIBRARY_PATH`` / ``PATH``。
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    if os.path.basename(directory).lower() in ("tor", "torbrowser"):
+        return directory
+    return ""
+
+
+def child_env(path: str) -> Dict[str, str]:
+    """构造运行 tor 时用的环境变量（补上随包动态库路径）。"""
+    env = dict(os.environ)
+    lib_dir = bundled_lib_dir(path)
+    if not lib_dir:
+        return env
+    if sys.platform == "darwin":
+        key = "DYLD_LIBRARY_PATH"
+    elif os.name == "nt":
+        key = "PATH"
+    else:
+        key = "LD_LIBRARY_PATH"
+    existing = env.get(key, "")
+    env[key] = lib_dir + (os.pathsep + existing if existing else "")
+    return env
+
+
 def tor_version(path: str, timeout: float = 15.0) -> Optional[tuple]:
     """返回 ``(major, minor, patch)``；无法获取时返回 ``None``。"""
     try:
@@ -87,6 +117,7 @@ def tor_version(path: str, timeout: float = 15.0) -> Optional[tuple]:
             timeout=timeout,
             text=True,
             errors="replace",
+            env=child_env(path),
         )
     except (OSError, subprocess.SubprocessError):
         return None

@@ -185,3 +185,58 @@ class PythonCompatTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class BundledTorLibTest(unittest.TestCase):
+    """随包分发的 tor 依赖同目录的动态库，启动时必须补上库搜索路径。"""
+
+    def test_bundled_lib_dir_detection(self):
+        import tempfile
+
+        from torsocks5.tor import find
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tor_dir = os.path.join(tmp, "tor")
+            os.makedirs(tor_dir)
+            fake = os.path.join(tor_dir, "tor")
+            with open(fake, "w") as handle:
+                handle.write("#!/bin/sh\necho 'Tor version 0.4.9.12'\n")
+            self.assertEqual(find.bundled_lib_dir(fake), tor_dir)
+
+    def test_system_tor_has_no_lib_dir(self):
+        from torsocks5.tor import find
+
+        self.assertEqual(find.bundled_lib_dir("/usr/bin/tor"), "")
+
+    def test_child_env_sets_path(self):
+        import sys as _sys
+        import tempfile
+
+        from torsocks5.tor import find
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tor_dir = os.path.join(tmp, "tor")
+            os.makedirs(tor_dir)
+            fake = os.path.join(tor_dir, "tor")
+            with open(fake, "w") as handle:
+                handle.write("#!/bin/sh\necho 'Tor version 0.4.9.12'\n")
+            os.chmod(fake, 0o755)
+            env = find.child_env(fake)
+            if _sys.platform == "darwin":
+                key = "DYLD_LIBRARY_PATH"
+            elif os.name == "nt":
+                key = "PATH"
+            else:
+                key = "LD_LIBRARY_PATH"
+            # macOS 上临时目录是 /var -> /private/var 的符号链接，比较时统一 realpath
+            self.assertIn(os.path.realpath(tor_dir), os.path.realpath(env[key]))
+
+            # 真实执行：带库目录的环境应能拿到版本号
+            version = find.tor_version(fake)
+            self.assertEqual(version, (0, 4, 9))
+
+    def test_child_env_without_bundled_dir_is_unchanged(self):
+        from torsocks5.tor import find
+
+        env = find.child_env("/usr/bin/tor")
+        self.assertNotIn("LD_LIBRARY_PATH", env)

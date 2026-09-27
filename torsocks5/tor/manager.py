@@ -284,6 +284,8 @@ class TorProcess:
             errors="replace",
             bufsize=1,
             creationflags=creationflags,
+            # 随包分发的 tor 依赖同目录的动态库（libevent 等），需要补上搜索路径
+            env=find_module.child_env(self.binary),
         )
         self._reader = threading.Thread(target=self._read_output, name="tor-log", daemon=True)
         self._reader.start()
