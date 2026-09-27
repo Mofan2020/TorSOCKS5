@@ -87,15 +87,49 @@ jobs:
           done
           if [ -n "$OK" ]; then
             tar -xzf /tmp/torpkg/tor.tar.gz -C dist/tor --strip-components=1
-            chmod +x dist/tor/tor 2>/dev/null || true
             echo "::notice::tor 来源: $OK"
-            echo "tor 已随包附带（${{ matrix.label }}）:"
-            ls dist/tor | head -20
-            if [ -f dist/tor/tor ] || [ -f dist/tor/tor.exe ]; then
-              echo "  tor 二进制: $(find dist/tor -maxdepth 2 -name 'tor*' -type f | head -1)"
-            else
+            # expert bundle 解包后 tor 常在子目录里（macOS 为 Tor/tor，Windows 为 Tor/tor.exe），
+            # 这里递归查找真正的可执行文件，并把它连同同级依赖扁平化到 dist/tor/。
+            TOR_BIN="$(find dist/tor -type f \( -name tor -o -name tor.exe \) ! -name '*.dll' | head -1)"
+            if [ -z "$TOR_BIN" ]; then
               echo "::warning::压缩包里没找到 tor 可执行文件"
               rm -rf dist/tor
+            else
+              # expert bundle 顶层目录名各平台不同（Tor / TorBrowser / Data...），
+              # 这里把 tor 二进制及其同级的 geoip/依赖统一复制到 dist/tor/ 顶层，
+              # 让 find.py 的 <程序目录>/tor/<exe> 候选路径能直接命中。
+              BIN_NAME="tor"; [ "${{ runner.os }}" = "Windows" ] && BIN_NAME="tor.exe"
+              TOR_DIR="$(dirname "$TOR_BIN")"
+              # 目录名 Tor 与文件 tor 只差大小写。在大小写不敏感的文件系统上，
+              # 「先 cp 到 dist/tor/tor，再 rm -rf dist/tor/Tor」会把刚复制好的文件一并删掉。
+              # 因此先把内层目录整体移出 dist/，复制完再清理。
+              if [ "$(cd "$TOR_DIR" && pwd -P)" != "$(cd dist/tor && pwd -P)" ]; then
+                # 1) 先把内层目录整体移出 dist/（避免后续 rm 误伤）
+                rm -rf /tmp/torbundle_inner
+                mv "$TOR_DIR" /tmp/torbundle_inner
+                # 2) 清理掉 bundle 里用不到的浏览器目录。
+                #    必须在复制 tor 之前做：在大小写不敏感的文件系统上，
+                #    目录 Tor 会匹配到刚创建的 dist/tor/tor 文件并把它删掉。
+                rm -rf dist/tor/Tor dist/tor/TorBrowser dist/tor/Browser dist/tor/Data 2>/dev/null || true
+                # 3) 再把需要的文件复制到 dist/tor/ 顶层
+                for EXTRA in geoip geoip6 pluggable-transports PluggableTransports; do
+                  if [ -e "/tmp/torbundle_inner/$EXTRA" ]; then
+                    cp -Rf "/tmp/torbundle_inner/$EXTRA" dist/tor/ || true
+                  fi
+                done
+                for LIB in /tmp/torbundle_inner/libevent-*.dylib; do
+                  if [ -e "$LIB" ]; then cp -f "$LIB" dist/tor/ || true; fi
+                done
+                cp -f "/tmp/torbundle_inner/$BIN_NAME" "dist/tor/$BIN_NAME"
+              fi
+              rm -rf /tmp/torbundle_inner
+              chmod +x "dist/tor/$BIN_NAME" 2>/dev/null || true
+              if [ ! -f "dist/tor/$BIN_NAME" ]; then
+                echo "::error::扁平化后找不到 dist/tor/$BIN_NAME（源: $TOR_BIN）"
+                exit 1
+              fi
+              echo "tor 已随包附带（${{ matrix.label }}）: dist/tor/$BIN_NAME"
+              ls dist/tor | head -20
             fi
           else
             echo "::warning::所有候选地址都下载失败，本平台产物将不含 tor"
@@ -134,9 +168,14 @@ jobs:
           kill "$(cat "$PT_OUT.pid")" 2>/dev/null || true
           cat "$PT_OUT"
           grep -q "CMETHODS DONE" "$PT_OUT" || { echo "::error::插件入口没有完成 PT 握手"; exit 1; }
-          if [ -x ./dist/tor/tor ] || [ -f ./dist/tor/tor.exe ]; then
-            echo "--- 随包 tor 可用性 ---"
-            (cd dist && ./tor/tor --version 2>/dev/null || ./tor/tor.exe --version) | head -1
+          TOR_BIN="$(find ./dist/tor -type f \( -name tor -o -name tor.exe \) 2>/dev/null | head -1 || true)"
+          if [ -n "$TOR_BIN" ]; then
+            echo "--- 随包 tor 可用性: $TOR_BIN ---"
+            chmod +x "$TOR_BIN" 2>/dev/null || true
+            "$TOR_BIN" --version 2>&1 | head -1
+          else
+            echo "本平台产物未附带 tor（包内应含安装说明）"
+            ls dist/*.md 2>/dev/null || true
           fi
 
       - name: 压缩成「打开即用」包
