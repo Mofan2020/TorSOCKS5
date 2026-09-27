@@ -52,6 +52,7 @@ jobs:
         run: python -m pip install --upgrade pip pyinstaller
 
       - name: 构建单文件可执行程序
+        shell: bash
         run: |
           pyinstaller --noconfirm --clean torsocks5.spec
           ls -la dist/
@@ -98,9 +99,15 @@ jobs:
           echo "--- selftest（离线端到端：SOCKS5 + meek 隧道 + PT 握手）---"
           "$BIN" selftest
           echo "--- 传输插件入口（模拟 tor 调用）---"
-          out=$(TOR_PT_METHODS=meek TOR_PT_MANAGED_TRANSPORT_VER=1 timeout 5 "$BIN" --transport-plugin 2>/dev/null || true)
-          echo "$out"
-          echo "$out" | grep -q "CMETHODS DONE" || { echo "::error::插件入口没有完成 PT 握手"; exit 1; }
+          # 插件是常驻进程，必须让它把握手输出刷到文件再判断，
+          # 否则命令替换会一直等到 timeout 杀掉进程，且可能拿到空缓冲。
+          PT_OUT="$(mktemp)"
+          ( TOR_PT_METHODS=meek TOR_PT_MANAGED_TRANSPORT_VER=1 PYTHONUNBUFFERED=1 \
+              "$BIN" --transport-plugin >"$PT_OUT" 2>/dev/null & echo $! >"$PT_OUT.pid" ) || true
+          sleep 5
+          kill "$(cat "$PT_OUT.pid")" 2>/dev/null || true
+          cat "$PT_OUT"
+          grep -q "CMETHODS DONE" "$PT_OUT" || { echo "::error::插件入口没有完成 PT 握手"; exit 1; }
           if [ -x ./dist/tor/tor ] || [ -f ./dist/tor/tor.exe ]; then
             echo "--- 随包 tor 可用性 ---"
             (cd dist && ./tor/tor --version 2>/dev/null || ./tor/tor.exe --version) | head -1
