@@ -1,0 +1,119 @@
+"""跨平台日志：带颜色、级别、时间戳，支持同时写文件。"""
+
+from __future__ import annotations
+
+import os
+import sys
+import threading
+import time
+from typing import Optional, TextIO
+
+LEVELS = {"debug": 10, "info": 20, "warn": 30, "error": 40, "silent": 100}
+
+_COLORS = {
+    "debug": "\033[90m",
+    "info": "\033[36m",
+    "warn": "\033[33m",
+    "error": "\033[31m",
+    "ok": "\033[32m",
+    "bold": "\033[1m",
+    "reset": "\033[0m",
+}
+
+
+def supports_color(stream: TextIO) -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    if os.name == "nt":
+        # Windows 10+ 的终端支持 ANSI，但需要主动打开
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+    return hasattr(stream, "isatty") and stream.isatty()
+
+
+class Logger:
+    def __init__(
+        self,
+        level: str = "info",
+        stream: Optional[TextIO] = None,
+        log_file: Optional[str] = None,
+        color: Optional[bool] = None,
+    ) -> None:
+        self.level = LEVELS.get(str(level).lower(), 20)
+        self.stream = stream or sys.stderr
+        self.use_color = supports_color(self.stream) if color is None else color
+        self.lock = threading.Lock()
+        self.file = None
+        if log_file:
+            try:
+                directory = os.path.dirname(os.path.abspath(log_file))
+                os.makedirs(directory, exist_ok=True)
+                self.file = open(log_file, "a", encoding="utf-8")
+            except OSError as exc:  # pragma: no cover
+                print("无法打开日志文件 %s: %s" % (log_file, exc), file=sys.stderr)
+
+    # ------------------------------------------------------------------
+    def _emit(self, level_name: str, message: str, color: str = "") -> None:
+        if LEVELS.get(level_name, 20) < self.level:
+            return
+        stamp = time.strftime("%H:%M:%S")
+        with self.lock:
+            if self.use_color and color:
+                line = "%s%s%s %s %s\n" % (
+                    _COLORS[color], stamp, _COLORS["reset"], level_name.upper().ljust(5), message
+                )
+            else:
+                line = "%s %s %s\n" % (stamp, level_name.upper().ljust(5), message)
+            self.stream.write(line)
+            self.stream.flush()
+            if self.file is not None:
+                self.file.write("%s %s %s\n" % (stamp, level_name.upper(), message))
+                self.file.flush()
+
+    def debug(self, message: str) -> None:
+        self._emit("debug", message, "debug")
+
+    def info(self, message: str) -> None:
+        self._emit("info", message, "info")
+
+    def ok(self, message: str) -> None:
+        self._emit("info", message, "ok")
+
+    def warn(self, message: str) -> None:
+        self._emit("warn", message, "warn")
+
+    def error(self, message: str) -> None:
+        self._emit("error", message, "error")
+
+    def plain(self, message: str = "") -> None:
+        with self.lock:
+            self.stream.write(message + "\n")
+            self.stream.flush()
+            if self.file is not None:
+                self.file.write(message + "\n")
+                self.file.flush()
+
+    def close(self) -> None:
+        if self.file is not None:
+            try:
+                self.file.close()
+            except OSError:
+                pass
+            self.file = None
+
+
+def banner(logger: Logger, text: str) -> None:
+    logger.plain("")
+    if logger.use_color:
+        logger.plain("%s%s%s" % (_COLORS["bold"], text, _COLORS["reset"]))
+    else:
+        logger.plain(text)
+    logger.plain("")

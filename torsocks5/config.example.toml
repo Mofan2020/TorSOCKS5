@@ -1,0 +1,83 @@
+# TorSOCKS5 配置示例
+# 复制到下列位置后按需修改：
+#   macOS/Linux: ~/.config/torsocks5/config.toml
+#   Windows:     %APPDATA%\torsocks5\config.toml
+# 也可以用 `torsocks5 config init` 自动生成。
+
+[proxy]
+# 监听的地址与端口。默认只监听本机回环，避免把代理暴露到公网。
+listen = "127.0.0.1"
+port = 9051
+
+# 留空表示免认证（仅本机使用时推荐）。填上用户名/密码后会启用 RFC 1929 认证，
+# 同时 tor 侧会按 IsolateSOCKSAuth 做流量隔离（不同用户走不同线路）。
+username = ""
+password = ""
+
+# 允许使用本代理的来源地址，支持 IP 与 CIDR，可用 "!" 前缀表示拒绝。
+allow_from = ["127.0.0.1", "::1"]
+
+# 连接数上限 / 空闲超时（秒）/ 建立连接超时（秒）
+max_connections = 512
+idle_timeout = 300
+connect_timeout = 30
+
+# 是否支持 UDP ASSOCIATE（DNS over UDP、部分游戏/语音）
+udp_associate = true
+
+# 打印每条连接日志
+verbose = false
+
+[tor]
+# tor 可执行文件路径，留空自动探测（PATH、Tor Browser、Homebrew、常见安装位置）
+# binary = "/opt/homebrew/bin/tor"
+
+# 留空自动分配空闲端口；指定后可用于固定端口做防火墙放行
+# socks_port = 0
+# control_port = 0
+
+# 数据目录（tor 的缓存、geoip、控制端口 cookie 都在这里）
+# data_dir = "~/.cache/torsocks5"
+
+# 日志级别：err / warn / notice / info / debug
+log_level = "notice"
+
+# meek 传输的提供方式：
+#   "plugin"  = 使用本项目自带的 Python meek 传输（默认，跨平台、无需编译）
+#   "builtin" = 使用 tor 内置的 meek 传输（需要你的 tor 编译时带 meek）
+#   "off"     = 不注册传输插件（配合 direct = true 直连 Tor）
+meek_mode = "plugin"
+
+# true = 忽略网桥，直接连接 Tor（网络没被墙时更快）
+direct = false
+
+# tor 意外退出时自动重启
+restart = true
+
+# 是否允许 tor 写缓存（geoip 等）。关闭更"干净"，但每次启动都要重新下载
+avoid_disk_writes = false
+
+# 追加任意 tor 启动参数
+# extra_options = ["TorCircuitBuildTimeout 120", "LearnCircuitBuildTimeout 30"]
+
+# 流量隔离（每个设置都会让不同流量走不同线路，更匿名但更慢）
+isolation = ["IsolateSOCKSAuth", "IsolateClientProtocol"]
+
+# 传给 ClientTransportPlugin 的传输名（网桥行里写 meek / meek_lite 都能用）
+# meek.methods 在下面的 [meek] 段里
+
+# 如果安装路径含空格导致插件无法启动，可手动指定一个无空格的临时目录
+# pt_shim_dir = "/tmp/torsocks5-pt"
+
+[meek]
+methods = ["meek", "meek_lite", "meek_azure"]
+connect_timeout = 20.0
+read_timeout = 30.0
+verbose = false
+
+[bridges]
+# 网桥配置文件位置，留空使用默认路径（与 config.toml 同目录）
+# file = "~/.config/torsocks5/bridges.toml"
+
+# 没有任何网桥时，是否回落到内置的公开 meek 网桥（可能已失效，仅作保底）
+builtin = true

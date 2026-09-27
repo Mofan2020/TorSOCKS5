@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.tox/
+htmlcov/
+.coverage
+coverage.xml
+
+# TorSOCKS5 运行时产物
+# 注意：这些规则必须锚定到仓库根目录，否则会误伤 torsocks5/ 源码包
+/torsocks5-data/
+/data/
+/tor-data/
+*.log
+bridges.local.toml
+config.local.toml
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 打包产物
+# 说明：PyInstaller 产物名为 TorSOCKS5，与源码包目录 torsocks5/ 仅大小写不同。
+# 在不区分大小写的文件系统（macOS/Windows）上，git 会把两者混同，
+# 因此这里不写 `TorSOCKS5` 规则，改用 /dist/ 与 /build/ 覆盖产物目录。
+/dist/
+/build/
+*.spec.bak

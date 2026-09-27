@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（例如 1.0.0）"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x86_64
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            label: linux-aarch64
+            arch: aarch64
+          - os: macos-14
+            label: macos-arm64
+            arch: arm64
+          - os: macos-13
+            label: macos-x86_64
+            arch: x86_64
+          - os: windows-latest
+            label: windows-x86_64
+            arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装构建依赖
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: 准备配置目录（保持路径无空格，macOS 打包器对空格敏感）
+        run: |
+          python -c "import sys; print(sys.version)"
+
+      - name: PyInstaller 打包
+        env:
+          ARCHS: ${{ matrix.arch == 'aarch64' && 'arm64' || matrix.arch }}
+        run: |
+          pyinstaller --noconfirm --clean torsocks5.spec
+          ls -la dist/
+
+      - name: 冒烟测试（版本 + 离线自检）
+        shell: bash
+        run: |
+          set -e
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN="./dist/TorSOCKS5.exe"
+          else
+            chmod +x ./dist/TorSOCKS5
+            BIN="./dist/TorSOCKS5"
+          fi
+          echo "--- --version ---"
+          "$BIN" --version
+          echo "--- selftest（离线端到端）---"
+          "$BIN" selftest
+          echo "--- doctor 的插件路径检查 ---"
+          "$BIN" doctor --port 19099 || true
+
+      - name: 压缩
+        shell: bash
+        run: |
+          set -e
+          cd dist
+          VERSION="${{ inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          NAME="TorSOCKS5-${VERSION}-${{ matrix.label }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            zip -q -r "${NAME}.zip" TorSOCKS5.exe README.md LICENSE
+          else
+            tar -czf "${NAME}.tar.gz" TorSOCKS5 README.md LICENSE
+          fi
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TorSOCKS5-${{ matrix.label }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          retention-days: 30
+          if-no-files-found: error
+
+  release:
+    name: 发布 Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: 汇总产物
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp {} release/ \;
+          ls -la release/
+          # 生成校验和
+          cd release && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ inputs.version || github.ref_name }}
+          tag_name: ${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
+          draft: false
+          prerelease: false
+          body: |
+            ## TorSOCKS5
+
+            通过 **meek 网桥**连接 Tor 网络的 SOCKS5 代理，meek 传输为纯 Python 实现。
+
+            ### 下载
+            | 平台 | 文件 |
+            | --- | --- |
+            | Windows x86_64 | `TorSOCKS5-<版本>-windows-x86_64.zip` → `TorSOCKS5.exe` |
+            | macOS Apple Silicon | `TorSOCKS5-<版本>-macos-arm64.tar.gz` |
+            | macOS Intel | `TorSOCKS5-<版本>-macos-x86_64.tar.gz` |
+            | Linux x86_64 | `TorSOCKS5-<版本>-linux-x86_64.tar.gz` |
+            | Linux ARM64 | `TorSOCKS5-<版本>-linux-aarch64.tar.gz` |
+
+            ### 快速开始
+            ```bash
+            # 1. 自检
+            TorSOCKS5 doctor
+            # 2. 导入你在 https://bridges.torproject.org 获取的 meek 网桥行
+            TorSOCKS5 bridges add "Bridge meek 0.0.2.0:3 url=... front=..."
+            # 3. 启动
+            TorSOCKS5 run
+            ```
+            然后用 `socks5h://127.0.0.1:9051` 作为代理。
+
+            > macOS 首次运行可能需要在「系统设置 → 隐私与安全性」中放行未签名的程序。
+            > 校验和见附件 `SHA256SUMS.txt`。
+          files: |
+            release/*
