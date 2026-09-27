@@ -11,16 +11,14 @@ from __future__ import annotations
 
 import hashlib
 import os
-import platform
 import re
-import shutil
 import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from .. import config as config_module
 from . import control as control_module

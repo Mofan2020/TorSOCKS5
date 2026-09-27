@@ -17,7 +17,12 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from torsocks5.meek.channel import _Http, MeekConnectError, gen_session_id  # noqa: E402
+from torsocks5.meek.channel import (  # noqa: E402
+    MeekConnectError,
+    MeekProtocolError,
+    _Http,
+    gen_session_id,
+)
 
 
 class _RawServer:
@@ -210,7 +215,7 @@ class KeepAliveDesyncTest(unittest.TestCase):
         server = _RawServer(lambda i: b"HTTP/1.1 200 OK\r\n\r\nbody-without-length")
         try:
             http = _Http(server.url, read_timeout=5, user_agent="")
-            with self.assertRaises(Exception):
+            with self.assertRaises((MeekProtocolError, MeekConnectError)):
                 http.post(b"a" * 4, gen_session_id())
             http.close()
         finally:

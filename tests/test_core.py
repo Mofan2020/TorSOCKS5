@@ -12,12 +12,16 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from tests.selftest_helpers import (  # noqa: E402
+    DirectSocksHandler,
+    DirectSocksServer,
+    start_http_echo,
+)
 from torsocks5 import bridges as bridges_mod  # noqa: E402
 from torsocks5 import config as config_mod  # noqa: E402
 from torsocks5.socks5 import client as socks_client  # noqa: E402
 from torsocks5.socks5.protocol import SocksError, decode_address, encode_address  # noqa: E402
 from torsocks5.socks5.server import AccessList, SocksServer  # noqa: E402
-from tests.selftest_helpers import DirectSocksHandler, DirectSocksServer, start_http_echo  # noqa: E402
 
 
 class _Reader:
@@ -421,6 +425,39 @@ connect_timeout = 12.5
         except ImportError:
             self.skipTest("no tomllib")
         self.assertEqual(mine, theirs)
+
+    def test_builtin_parser_handles_array_of_tables(self):
+        """``[[bridge]]`` 是网桥配置的必需语法。
+
+        Python 3.8~3.10 没有 tomllib，只能用内置解析器；早期版本不支持
+        数组表，会导致「存进去的网桥读不出来」。
+        """
+        text = """
+[[bridge]]
+transport = "meek"
+address = "0.0.2.0:3"
+raw = "Bridge meek 0.0.2.0:3"
+[bridge.args]
+url = "https://a.example/"
+front = "b.example"
+
+[[bridge]]
+transport = "obfs4"
+address = "1.2.3.4:443"
+"""
+        mine = config_mod.loads(text)
+        try:
+            import tomllib
+
+            theirs = tomllib.loads(text)
+        except ImportError:
+            theirs = None
+        if theirs is not None:
+            self.assertEqual(mine, theirs)
+        self.assertEqual(len(mine["bridge"]), 2)
+        self.assertEqual(mine["bridge"][0]["transport"], "meek")
+        self.assertEqual(mine["bridge"][0]["args"]["url"], "https://a.example/")
+        self.assertEqual(mine["bridge"][1]["transport"], "obfs4")
 
     def test_shipped_example_config_parses(self):
         example = os.path.join(ROOT, "torsocks5", "config.example.toml")

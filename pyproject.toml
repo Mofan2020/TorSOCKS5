@@ -55,14 +55,11 @@ line-length = 100
 target-version = "py38"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B"]
+select = ["E", "F", "W", "I", "B"]
 ignore = [
     "E501",    # 行宽由 formatter 控制
     "B008",
-    "UP006",   # 保持 typing.List 等写法以兼容 Python 3.8
-    "UP007",
-    "UP035",
-    "UP045",
+    "E741",    # 循环里用 host/port/l 这类短名是刻意为之
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -70,7 +67,7 @@ ignore = [
 "tests/*" = ["E402"]
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.10"
 ignore_missing_imports = true
 warn_unused_configs = true
 disallow_untyped_defs = false

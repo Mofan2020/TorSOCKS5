@@ -19,7 +19,7 @@ import os
 import socket
 import threading
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import IO, Callable, Dict, List, Optional, Tuple, cast
 
 
 class ControlError(Exception):
@@ -41,7 +41,7 @@ class ControlClient:
         self.password = password
         self.timeout = timeout
         self._sock: Optional[socket.socket] = None
-        self._file = None
+        self._file: Optional[IO[bytes]] = None
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ 连接
@@ -49,7 +49,7 @@ class ControlClient:
         sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
         sock.settimeout(self.timeout)
         self._sock = sock
-        self._file = sock.makefile("rwb", buffering=0)
+        self._file = cast(IO[bytes], sock.makefile("rwb", buffering=0))
         self.authenticate()
 
     def authenticate(self) -> None:
@@ -80,7 +80,7 @@ class ControlClient:
                 pass
             self._sock = None
 
-    def __enter__(self) -> "ControlClient":
+    def __enter__(self) -> ControlClient:
         self.connect()
         return self
 

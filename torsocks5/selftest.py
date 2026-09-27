@@ -17,9 +17,10 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import List, Optional, Tuple
+from typing import Tuple
 
 from . import log as log_mod
+from .cli import _addr
 from .meek.channel import MeekChannel
 from .meek.mock_server import serve as serve_meek
 from .socks5 import client as socks_client
@@ -55,7 +56,7 @@ class _DirectSocksHandler(socketserver.BaseRequestHandler):
                 sock.sendall(bytes([VERSION, AUTH_NONE]))
             elif AUTH_USERNAME in methods:
                 sock.sendall(bytes([VERSION, AUTH_USERNAME]))
-                ver = reader.read(1)
+                reader.read(1)  # RFC 1929 版本号
                 ulen = reader.read(1)[0]
                 reader.read(ulen)
                 plen = reader.read(1)[0]
@@ -169,14 +170,14 @@ def run_selfcheck() -> Tuple[bool, str]:
     threading.Thread(target=upstream.serve_forever, daemon=True).start()
     httpd = HTTPServer(("127.0.0.1", 0), _EchoHandler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    server = SocksServer(upstream=upstream.server_address, host="127.0.0.1", port=0)
+    server = SocksServer(upstream=_addr(upstream.server_address), host="127.0.0.1", port=0)
     server.bind()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        body = _http_fetch_via_socks(server.address, httpd.server_address)
+        body = _http_fetch_via_socks(_addr(server.address), _addr(httpd.server_address))
         if TOKEN.encode() in body:
             return True, "SOCKS5 转发正常（%s -> %s）" % (
-                "%s:%d" % server.address, "%s:%d" % httpd.server_address)
+                "%s:%d" % _addr(server.address), "%s:%d" % _addr(httpd.server_address))
         return False, "SOCKS5 转发异常，响应: %r" % body[:120]
     except Exception as exc:  # noqa: BLE001
         return False, "SOCKS5 自检失败: %s" % exc
@@ -197,23 +198,23 @@ def run_full_selftest(logger: log_mod.Logger) -> int:
         threading.Thread(target=upstream.serve_forever, daemon=True).start()
         httpd = HTTPServer(("127.0.0.1", 0), _EchoHandler)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        anonymous = SocksServer(upstream=upstream.server_address, host="127.0.0.1", port=0)
+        anonymous = SocksServer(upstream=_addr(upstream.server_address), host="127.0.0.1", port=0)
         anonymous.bind()
         threading.Thread(target=anonymous.serve_forever, daemon=True).start()
-        body = _http_fetch_via_socks(anonymous.address, httpd.server_address)
+        body = _http_fetch_via_socks(_addr(anonymous.address), _addr(httpd.server_address))
         assert TOKEN.encode() in body, "免认证转发失败"
         logger.ok("     免认证 CONNECT 正常")
 
-        secured = SocksServer(upstream=upstream.server_address, host="127.0.0.1", port=0,
+        secured = SocksServer(upstream=_addr(upstream.server_address), host="127.0.0.1", port=0,
                               username="alice", password="s3cret")
         secured.bind()
         threading.Thread(target=secured.serve_forever, daemon=True).start()
-        body = _http_fetch_via_socks(secured.address, httpd.server_address,
+        body = _http_fetch_via_socks(_addr(secured.address), _addr(httpd.server_address),
                                      username="alice", password="s3cret")
         assert TOKEN.encode() in body, "认证转发失败"
         logger.ok("     用户名/密码认证正常")
         try:
-            _http_fetch_via_socks(secured.address, httpd.server_address,
+            _http_fetch_via_socks(_addr(secured.address), _addr(httpd.server_address),
                                   username="alice", password="wrong")
             logger.error("     错误密码竟然通过了认证！")
             failures += 1
@@ -322,7 +323,7 @@ def _udp_check() -> bool:
     """UDP 转发链路检查（经我们的代理 -> 直连上游 -> UDP 回显）。"""
     upstream = _DirectSocksServer(("127.0.0.1", 0), _DirectSocksHandler)
     threading.Thread(target=upstream.serve_forever, daemon=True).start()
-    server = SocksServer(upstream=upstream.server_address, host="127.0.0.1", port=0)
+    server = SocksServer(upstream=_addr(upstream.server_address), host="127.0.0.1", port=0)
     server.bind()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     echo = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -389,6 +390,8 @@ def _pt_check() -> None:
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, bufsize=1,
     )
+    if process.stdout is None or process.stdin is None or process.stderr is None:
+        raise RuntimeError("无法创建子进程管道")
     try:
         address = None
         deadline = time.time() + 20
@@ -422,7 +425,7 @@ def _pt_check() -> None:
     finally:
         try:
             process.stdin.close()
-        except OSError:
+        except (OSError, ValueError):
             pass
         process.terminate()
         try:

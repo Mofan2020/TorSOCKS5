@@ -37,14 +37,14 @@ class SocksError(Exception):
     """SOCKS 协议错误。"""
 
 
-def encode_address(host: str, port: int) -> Tuple[bytes, bytes]:
-    """把 ``host``/``port`` 编码成 SOCKS5 的 ATYP+ADDR+PORT 字段。"""
+def encode_address(host: str, port: int) -> bytes:
+    """把 ``host``/``port`` 编码成 SOCKS5 的 ``ATYP+ADDR+PORT`` 字节序列。"""
     try:
         addr = ipaddress.ip_address(host)
     except ValueError:
         raw = host.encode("idna") if any(ord(c) > 127 for c in host) else host.encode("ascii")
         if len(raw) > 255:
-            raise SocksError("域名过长: %r" % host)
+            raise SocksError("域名过长: %r" % host) from None
         return bytes([ATYP_DOMAIN, len(raw)]) + raw + struct.pack("!H", port)
     if addr.version == 4:
         return bytes([ATYP_V4]) + addr.packed + struct.pack("!H", port)

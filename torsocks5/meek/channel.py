@@ -27,7 +27,7 @@ import socket
 import ssl
 import threading
 import time
-from typing import Callable, List, Optional, Tuple
+from typing import IO, Callable, List, Optional, Tuple, cast
 from urllib.parse import urlsplit, urlunsplit
 
 # 与官方实现保持一致的协议常量。
@@ -128,7 +128,7 @@ class _Http:
         self.read_timeout = read_timeout
         self.user_agent = user_agent
         self._sock: Optional[socket.socket] = None
-        self._rfile = None
+        self._rfile: Optional[IO[bytes]] = None
         self._version = "HTTP/1.1"
         self._closed = False
 
@@ -147,14 +147,16 @@ class _Http:
                     sock.close()
                 except OSError:
                     pass
-                raise MeekConnectError("TLS 握手失败 (%s): %s" % (self.dial_host, exc)) from exc
+                raise MeekConnectError(
+                    "TLS 握手失败 (%s): %s" % (self.dial_host, exc)
+                ) from exc
         try:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except OSError:
             pass
         sock.settimeout(self.read_timeout)
         self._sock = sock
-        self._rfile = sock.makefile("rb", buffering=64 * 1024)
+        self._rfile = cast(IO[bytes], sock.makefile("rb", buffering=64 * 1024))
         return sock
 
     def close(self) -> None:
@@ -251,7 +253,7 @@ class _Http:
                     want = int(length)
                 except ValueError:
                     self.close()
-                    raise MeekConnectError("非法的 Content-Length: %r" % length)
+                    raise MeekConnectError("非法的 Content-Length: %r" % length) from None
                 data = self._read_exactly(min(want, MAX_PAYLOAD))
                 if want > MAX_PAYLOAD:
                     # 超额数据必须丢弃，否则连接会错位
@@ -371,8 +373,8 @@ class MeekChannel:
         self._retry_delay = retry_delay
         self._on_status = on_status
         self._on_error = on_error
-        self._wr: "queue.Queue[Optional[bytes]]" = queue.Queue()
-        self._rd: "queue.Queue[object]" = queue.Queue()
+        self._wr: queue.Queue[Optional[bytes]] = queue.Queue()
+        self._rd: queue.Queue[object] = queue.Queue()
         self._leftover = b""
         self._closed = threading.Event()
         self._worker: Optional[threading.Thread] = None
@@ -524,12 +526,12 @@ class MeekChannel:
             try:
                 item = self._rd.get(timeout=timeout)
             except queue.Empty:
-                raise MeekError("读取 meek 通道超时")
+                raise MeekError("读取 meek 通道超时") from None
             if item is None:
                 return b""
             if isinstance(item, BaseException):
                 raise item
-            data = bytes(item)  # type: ignore[arg-type]
+            data = item if isinstance(item, bytes) else bytes(item)  # type: ignore[call-overload]
             if not data:
                 continue
             return data

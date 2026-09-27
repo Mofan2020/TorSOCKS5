@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from typing import Any, Dict, List, Tuple
 
 try:  # Python 3.11+
@@ -23,7 +24,7 @@ def default_config_dir() -> str:
     if os.name == "nt":
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
         return os.path.join(base, APP_NAME)
-    if os.sys.platform == "darwin":
+    if sys.platform == "darwin":
         return os.path.join(os.path.expanduser("~"), "Library", "Application Support", APP_NAME)
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
     return os.path.join(base, APP_NAME)
@@ -34,7 +35,7 @@ def default_data_dir() -> str:
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
         return os.path.join(base, APP_NAME)
-    if os.sys.platform == "darwin":
+    if sys.platform == "darwin":
         return os.path.join(os.path.expanduser("~"), "Library", "Caches", APP_NAME)
     base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
     return os.path.join(base, APP_NAME)
@@ -55,6 +56,7 @@ class ConfigError(Exception):
 # --------------------------------------------------------------------- 精简 TOML
 _KEY_RE = re.compile(r'^\s*((?:"[^"]*"|\'[^\']*\'|[A-Za-z0-9_.\-]+)\s*)=\s*(.*)$')
 _TABLE_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+_ARRAY_TABLE_RE = re.compile(r"^\s*\[\[([^\]]+)\]\]\s*$")
 
 
 def _strip_comment(line: str) -> str:
@@ -163,7 +165,14 @@ def _parse_inline_table(raw: str) -> Dict[str, Any]:
 
 
 def loads(text: str) -> Dict[str, Any]:
-    """解析 TOML 文本（精简实现）。"""
+    """解析 TOML 文本（精简实现）。
+
+    覆盖本项目配置用到的语法：注释、普通表、点号表名、**数组表**（``[[x]]``）、
+    基本/字面量字符串、整数、浮点、布尔、多行数组、内联表。
+
+    数组表是网桥配置（``[[bridge]]``）所必需的 —— Python 3.8~3.10 没有
+    标准库 tomllib，只能依赖这里。
+    """
     root: Dict[str, Any] = {}
     table: Dict[str, Any] = root
     lines = text.splitlines()
@@ -174,15 +183,17 @@ def loads(text: str) -> Dict[str, Any]:
         line = _strip_comment(raw_line)
         if not line:
             continue
+
+        array_match = _ARRAY_TABLE_RE.match(line)
+        if array_match:
+            table = _descend(root, array_match.group(1).split("."), array_table=True)
+            continue
+
         table_match = _TABLE_RE.match(line)
         if table_match:
-            table = root
-            for part in table_match.group(1).split("."):
-                part = part.strip().strip("\"'")
-                table = table.setdefault(part, {})
-                if not isinstance(table, dict):
-                    raise ConfigError("表名冲突: %s" % part)
+            table = _descend(root, table_match.group(1).split("."), array_table=False)
             continue
+
         # 多行数组
         if line.count("[") > line.count("]") and "=" in line:
             while index < len(lines) and line.count("[") > line.count("]"):
@@ -199,6 +210,35 @@ def loads(text: str) -> Dict[str, Any]:
                 index += 1
         table[key] = _parse_value(value_raw)
     return root
+
+
+def _descend(
+    root: Dict[str, Any], parts: List[str], array_table: bool
+) -> Dict[str, Any]:
+    """按表名逐层进入；``array_table=True`` 时进入列表的最后一个元素。"""
+    node: Any = root
+    last = len(parts) - 1
+    for index, raw_part in enumerate(parts):
+        part = raw_part.strip().strip("\"'")
+        if array_table and index == last:
+            existing = node.get(part)
+            if not isinstance(existing, list):
+                existing = []
+                node[part] = existing
+            entry: Dict[str, Any] = {}
+            existing.append(entry)
+            return entry
+        child = node.get(part)
+        if child is None:
+            child = {}
+            node[part] = child
+        if isinstance(child, list):
+            # 处于某个数组表内部（如 [[bridge]] 后的 [bridge.args]）
+            child = child[-1]
+        if not isinstance(child, dict):
+            raise ConfigError("表名冲突: %s" % part)
+        node = child
+    return node
 
 
 def load_toml(path: str) -> Dict[str, Any]:
@@ -266,7 +306,7 @@ class Config:
         self.path = path
 
     @classmethod
-    def load(cls, path: str = "") -> "Config":
+    def load(cls, path: str = "") -> Config:
         path = path or os.environ.get("TORSOCKS5_CONFIG") or default_config_path()
         if not os.path.exists(path):
             return cls({}, path)
@@ -286,7 +326,7 @@ class Config:
 
     def as_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
-        for name, value in DEFAULTS:
+        for name, _default in DEFAULTS:
             node = out
             parts = name.split(".")
             for part in parts[:-1]:

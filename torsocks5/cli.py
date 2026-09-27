@@ -25,13 +25,35 @@ import urllib.error
 import urllib.request
 from typing import List, Optional, Tuple
 
-from . import __version__, bridges as bridges_mod, config as config_mod, log as log_mod
-from .socks5 import client as socks_client
+from . import __version__
+from . import bridges as bridges_mod
+from . import config as config_mod
+from . import log as log_mod
 from .socks5.server import SocksServer
 from .tor import find as tor_find
-from .tor.manager import STATE_READY, TorProcess, TorSupervisor, free_port, port_available
+from .tor.manager import TorProcess, TorSupervisor, port_available
 
 PROGRESS_WIDTH = 28
+
+
+def _force_utf8_output() -> None:
+    """把标准输出/错误切到 UTF-8。
+
+    Windows 控制台默认使用本地代码页（cp936 / cp1252），直接输出中文与非
+    ASCII 符号会抛 UnicodeEncodeError，``--help`` 甚至会因此崩溃。
+    必须在构造 argparse 解析器之前调用（argparse 会在 parse_args 时打印帮助）。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError, AttributeError):  # 已被重定向到不支持的对象
+            pass
+
+
+_force_utf8_output()
 
 
 # --------------------------------------------------------------------- 工具
@@ -50,9 +72,17 @@ def _parse_addr(text: str, default_port: int = 0) -> Tuple[str, int]:
         port = int(rest.lstrip(":") or default_port)
         return host, port
     if ":" in text:
-        host, _, port = text.rpartition(":")
-        return host, int(port or default_port)
+        host, _, raw_port = text.rpartition(":")
+        return host, int(raw_port or default_port)
     return text, default_port
+
+
+def _addr(value) -> Tuple[str, int]:
+    """把 ``getsockname()`` 之类的结果规整成 ``(host, port)``。"""
+    host, port = value[0], value[1]
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    return str(host), int(port)
 
 
 def load_bridges(config: config_mod.Config, extra: Optional[List[str]] = None) -> bridges_mod.BridgeStore:
@@ -66,7 +96,7 @@ def load_bridges(config: config_mod.Config, extra: Optional[List[str]] = None) -
             try:
                 store.add(bridges_mod.parse_bridge_line(item))
             except bridges_mod.BridgeError as exc:
-                raise SystemExit("网桥行无效: %s -> %s" % (item, exc))
+                raise SystemExit("网桥行无效: %s -> %s" % (item, exc)) from exc
     return store
 
 
@@ -232,7 +262,7 @@ def cmd_doctor(args: argparse.Namespace, logger: log_mod.Logger) -> int:
     log_mod.banner(logger, "TorSOCKS5 %s 环境自检" % __version__)
 
     logger.info("Python: %s (%s)" % (platform.python_version(), sys.executable))
-    if sys.version_info < (3, 8):
+    if sys.version_info < (3, 8):  # noqa: UP036 - 运行时兜底检查
         logger.error("需要 Python 3.8 或更高版本")
         problems += 1
     logger.ok("操作系统: %s %s (%s)" % (platform.system(), platform.release(), platform.machine()))
@@ -328,7 +358,7 @@ def cmd_doctor(args: argparse.Namespace, logger: log_mod.Logger) -> int:
 
 def _probe_tcp(host: str, port: int, timeout: float = 5.0) -> Tuple[bool, str]:
     try:
-        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         return False, "DNS 解析失败: %s" % exc
     try:
@@ -402,7 +432,7 @@ def cmd_bridges(args: argparse.Namespace, logger: log_mod.Logger) -> int:
     if action == "import":
         text = ""
         if args.file:
-            with open(args.file, "r", encoding="utf-8") as handle:
+            with open(args.file, encoding="utf-8") as handle:
                 text = handle.read()
         elif args.url:
             try:

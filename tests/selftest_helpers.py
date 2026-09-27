@@ -7,7 +7,6 @@ import socketserver
 import struct
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Tuple
 
 TOKEN = "torsocks5-selftest-ok"
 

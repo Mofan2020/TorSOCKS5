@@ -13,8 +13,8 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from torsocks5.meek.mock_server import serve  # noqa: E402
 from tests.test_meek import _OrPort  # noqa: E402
+from torsocks5.meek.mock_server import serve  # noqa: E402
 
 
 class FakeTor:
@@ -122,7 +122,7 @@ class PluggableTransportTest(unittest.TestCase):
         try:
             self.assertIn("VERSION 1", tor.lines)
             self.assertIn("CMETHODS DONE", tor.lines)
-            self.assertTrue(any(l.startswith("CMETHOD meek socks5 127.0.0.1:") for l in tor.lines))
+            self.assertTrue(any(line.startswith("CMETHOD meek socks5 127.0.0.1:") for line in tor.lines))
             url = "http://127.0.0.1:%d/" % self.port
             sock = tor.connect("url=%s" % url)
             sock.settimeout(20)
@@ -137,7 +137,7 @@ class PluggableTransportTest(unittest.TestCase):
         tor = FakeTor(methods="meek_lite,meek,meek_azure,obfs4")
         try:
             self.assertEqual(set(tor.methods), {"meek", "meek_lite", "meek_azure"})
-            self.assertTrue(any(l.startswith("CMETHOD-ERROR obfs4") for l in tor.lines))
+            self.assertTrue(any(line.startswith("CMETHOD-ERROR obfs4") for line in tor.lines))
             host, port = tor.methods["meek_lite"].rsplit(":", 1)
             self.assertTrue(port.isdigit())
         finally:

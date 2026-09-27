@@ -14,7 +14,7 @@ import socketserver
 import ssl
 import threading
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, cast
 
 MAX_PAYLOAD = 0x10000
 TURNAROUND_TIMEOUT = 0.010
@@ -90,7 +90,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(400, "Bad request.\n")
             return
 
-        sessions: _Sessions = self.server.sessions  # type: ignore[attr-defined]
+        sessions = cast(_Sessions, self.server.sessions)
         try:
             orconn = sessions.get(session_id)
         except OSError as exc:

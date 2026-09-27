@@ -97,7 +97,7 @@ class BridgeLine:
         return data
 
     @classmethod
-    def from_dict(cls, data: Dict[str, object]) -> "BridgeLine":
+    def from_dict(cls, data: Dict[str, object]) -> BridgeLine:
         args = data.get("args") or {}
         if not isinstance(args, dict):
             raise BridgeError("args 必须是键值表")
@@ -259,7 +259,7 @@ class BridgeStore:
         self.bridges: List[BridgeLine] = []
 
     # --------------------------------------------------------------
-    def load(self, include_builtin: bool = True) -> "BridgeStore":
+    def load(self, include_builtin: bool = True) -> BridgeStore:
         from . import config as config_module
 
         self.bridges = []

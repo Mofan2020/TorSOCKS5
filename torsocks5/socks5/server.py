@@ -22,7 +22,6 @@ from .protocol import (
     AUTH_NONE,
     AUTH_UNACCEPTABLE,
     AUTH_USERNAME,
-    CMD_BIND,
     CMD_CONNECT,
     CMD_UDP_ASSOCIATE,
     REP_ADDRESS_TYPE_NOT_SUPPORTED,
@@ -109,7 +108,7 @@ class _Reader:
 class SocksConnection:
     """一条客户端连接。"""
 
-    def __init__(self, sock: socket.socket, peer, server: "SocksServer") -> None:
+    def __init__(self, sock: socket.socket, peer, server: SocksServer) -> None:
         self.sock = sock
         self.peer = peer
         self.server = server
@@ -129,7 +128,7 @@ class SocksConnection:
             pass
 
     # ------------------------------------------------------------------ 认证
-    def negotiate(self) -> Optional[Tuple[str, str, int]]:
+    def negotiate(self) -> Optional[Tuple[str, int, int]]:
         """完成方法协商与认证，返回 ``(host, port, cmd)``。"""
         reader = _Reader(self.sock)
         head = reader.read(2)
@@ -178,7 +177,7 @@ class SocksConnection:
             host, port = decode_address(reader)
         except SocksError as exc:
             self._reply(REP_ADDRESS_TYPE_NOT_SUPPORTED)
-            raise SocksError(str(exc))
+            raise SocksError(str(exc)) from None
         return host, port, command
 
     # ------------------------------------------------------------------ 处理
