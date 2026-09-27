@@ -64,7 +64,7 @@ jobs:
         shell: bash
         env:
           TOR_PKG: ${{ matrix.tor_pkg }}
-        TOR_LABEL: ${{ matrix.label }}
+          TOR_LABEL: ${{ matrix.label }}
         run: |
           set -uo pipefail
           mkdir -p /tmp/torpkg dist/tor
