@@ -14,8 +14,11 @@ permissions:
   contents: write
 
 env:
-  # Tor 官方「Little-t tor / expert bundle」版本，发布「打开即用」包时随包附带
-  TOR_VERSION: "0.4.9.12"
+  # Tor 官方「Little-t tor / expert bundle」版本，发布「打开即用」包时随包附带。
+  # 注意：Tor Project 的下载目录版本号与包内 tor 版本号并不总是一致
+  # （例如 15.0.22 目录里的包内是 tor 0.4.9.12），所以下面用多个候选探测。
+  TOR_BUNDLE_VERSION: "0.4.9.12"
+  TOR_TBB_VERSION: "15.0.22"
 
 jobs:
   build:
@@ -61,20 +64,69 @@ jobs:
         shell: bash
         env:
           TOR_PKG: ${{ matrix.tor_pkg }}
+        TOR_LABEL: ${{ matrix.label }}
         run: |
-          set -e
-          URL="https://dist.torproject.org/tor-${TOR_VERSION}/${TOR_PKG}-${TOR_VERSION}.tar.gz"
-          echo "下载 tor: $URL"
-          mkdir -p /tmp/torpkg
-          if curl -fsSL --retry 3 -o /tmp/torpkg/tor.tar.gz "$URL"; then
-            mkdir -p dist/tor
+          set -uo pipefail
+          mkdir -p /tmp/torpkg dist/tor
+          # 候选顺序：Little-t tor 官方目录 → Tor Browser 版本目录 → 官方镜像站
+          CANDIDATES=(
+            "https://dist.torproject.org/tor-${TOR_BUNDLE_VERSION}/${TOR_PKG}-${TOR_BUNDLE_VERSION}.tar.gz"
+            "https://dist.torproject.org/tor-package-archive/torbrowser/${TOR_TBB_VERSION}/${TOR_PKG}-${TOR_TBB_VERSION}.tar.gz"
+            "https://ftp.torproject.org/tor-package-archive/torbrowser/${TOR_TBB_VERSION}/${TOR_PKG}-${TOR_TBB_VERSION}.tar.gz"
+            "https://archive.torproject.org/tor-package-archive/torbrowser/${TOR_TBB_VERSION}/${TOR_PKG}-${TOR_TBB_VERSION}.tar.gz"
+          )
+          OK=""
+          for URL in "${CANDIDATES[@]}"; do
+            echo "尝试下载: $URL"
+            if curl -fsSL --retry 2 --connect-timeout 20 -o /tmp/torpkg/tor.tar.gz "$URL"; then
+              if tar -tzf /tmp/torpkg/tor.tar.gz >/dev/null 2>&1; then
+                OK="$URL"; break
+              fi
+              echo "  下载内容不是有效压缩包，尝试下一个"
+            fi
+          done
+          if [ -n "$OK" ]; then
             tar -xzf /tmp/torpkg/tor.tar.gz -C dist/tor --strip-components=1
-            # macOS/Linux 的可执行位；Windows 无所谓
             chmod +x dist/tor/tor 2>/dev/null || true
-            echo "tor 已随包附带："
+            echo "::notice::tor 来源: $OK"
+            echo "tor 已随包附带（${{ matrix.label }}）:"
             ls dist/tor | head -20
+            if [ -f dist/tor/tor ] || [ -f dist/tor/tor.exe ]; then
+              echo "  tor 二进制: $(find dist/tor -maxdepth 2 -name 'tor*' -type f | head -1)"
+            else
+              echo "::warning::压缩包里没找到 tor 可执行文件"
+              rm -rf dist/tor
+            fi
           else
-            echo "::warning::下载 tor 失败，产物将不含 tor（用户需自行安装）"
+            echo "::warning::所有候选地址都下载失败，本平台产物将不含 tor"
+            cat > dist/请先安装tor.md <<'EOF'
+            # 本包未包含 tor 运行时
+
+            构建时未能从 Tor 官方站点下载 tor（可能是临时网络问题）。请任选一种方式补齐：
+
+            ## 方式 1：让程序自己下载（推荐）
+
+            ```bash
+            ./TorSOCKS5 fetch-tor
+            ```
+
+            下载完成后按提示把路径写进配置：
+
+            ```toml
+            [tor]
+            binary = "<提示中的路径>"
+            ```
+
+            ## 方式 2：手动安装 tor
+
+            * **macOS**：`brew install tor`
+            * **Debian / Ubuntu**：`sudo apt install tor`
+            * **Windows**：安装 Tor Expert Bundle，或用 Tor Browser 自带的那份
+            * **其他平台**：从 <https://dist.torproject.org/> 下载
+
+            装好后用 `./TorSOCKS5 doctor` 确认能识别到 tor。
+            EOF
+            rm -rf dist/tor
           fi
 
       - name: 随包附带文档与脚本
