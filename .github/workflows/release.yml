@@ -99,33 +99,7 @@ jobs:
             fi
           else
             echo "::warning::所有候选地址都下载失败，本平台产物将不含 tor"
-            cat > dist/请先安装tor.md <<'EOF'
-            # 本包未包含 tor 运行时
-
-            构建时未能从 Tor 官方站点下载 tor（可能是临时网络问题）。请任选一种方式补齐：
-
-            ## 方式 1：让程序自己下载（推荐）
-
-            ```bash
-            ./TorSOCKS5 fetch-tor
-            ```
-
-            下载完成后按提示把路径写进配置：
-
-            ```toml
-            [tor]
-            binary = "<提示中的路径>"
-            ```
-
-            ## 方式 2：手动安装 tor
-
-            * **macOS**：`brew install tor`
-            * **Debian / Ubuntu**：`sudo apt install tor`
-            * **Windows**：安装 Tor Expert Bundle，或用 Tor Browser 自带的那份
-            * **其他平台**：从 <https://dist.torproject.org/> 下载
-
-            装好后用 `./TorSOCKS5 doctor` 确认能识别到 tor。
-            EOF
+            python scripts/write_tor_readme.py "dist/请先安装tor.md" "$TOR_LABEL"
             rm -rf dist/tor
           fi
 
