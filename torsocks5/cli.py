@@ -155,7 +155,11 @@ def cmd_run(args: argparse.Namespace, logger: log_mod.Logger) -> int:
             logger.info("网桥: %s" % ("; ".join(bridge_lines[:3]) + ("…" if len(bridge_lines) > 3 else "")))
         timeout = args.ready_timeout if args.ready_timeout is not None else 300
         if timeout > 0:
-            logger.info("等待 Tor 引导完成（最多 %d 秒，meek 网桥通常需要 20~90 秒）…" % timeout)
+            logger.info("等待 Tor 引导完成（最多 %d 秒）…" % timeout)
+            logger.info("提示：meek 协议每 64KB 需要一次完整 HTTP 往返，**慢是正常现象**。")
+            logger.info("      首次启动要下载约 7MB 目录信息，可能需要 10~30 分钟；")
+            logger.info("      进度停在 50%%~99%% 且仍在缓慢增长即属正常。")
+            logger.info("      想更久可加 --ready-timeout 1800；不想等待用 --ready-timeout 0 --keep-going")
             if not tor.wait_for_ready(timeout):
                 percent, summary = tor.bootstrap_status()
                 logger.error("Tor 引导未完成（%d%% %s）。" % (percent, summary))
@@ -339,6 +343,8 @@ def cmd_doctor(args: argparse.Namespace, logger: log_mod.Logger) -> int:
         logger.warn("无法连接 %s:443（%s）" % (target, detail))
         logger.info("如果你在受审查网络里，这可能正是需要 meek 网桥的原因；"
                     "若已能连通则说明当前网络并不封锁 Tor。")
+    logger.info("提醒：meek 每 64KB 就要一次完整 HTTP 往返，速度慢是正常现象，"
+                "首次引导可能需要 10~30 分钟。")
 
     logger.plain("\n[6/6] 本地回环自检")
     ok, detail = _local_selfcheck()

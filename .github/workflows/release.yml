@@ -6,15 +6,20 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "版本号（例如 1.0.0）"
-        required: true
+        description: "版本号（例如 1.0.0）；留空则用当前 ref 名"
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
+env:
+  # Tor 官方「Little-t tor / expert bundle」版本，发布「打开即用」包时随包附带
+  TOR_VERSION: "0.4.9.12"
+
 jobs:
   build:
-    name: 构建 ${{ matrix.os }}
+    name: 构建 ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -22,44 +27,63 @@ jobs:
         include:
           - os: ubuntu-latest
             label: linux-x86_64
-            arch: x86_64
+            tor_pkg: tor-expert-bundle-linux-x86_64
           - os: ubuntu-24.04-arm
             label: linux-aarch64
-            arch: aarch64
-          - os: macos-14
+            tor_pkg: tor-expert-bundle-linux-aarch64
+          - os: macos-15
             label: macos-arm64
-            arch: arm64
-          - os: macos-13
+            tor_pkg: tor-expert-bundle-macos-aarch64
+          - os: macos-15-intel
             label: macos-x86_64
-            arch: x86_64
+            tor_pkg: tor-expert-bundle-macos-x86_64
           - os: windows-latest
             label: windows-x86_64
-            arch: x86_64
+            tor_pkg: tor-expert-bundle-windows-x86_64
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: 安装构建依赖
+      - name: 安装 PyInstaller
         run: python -m pip install --upgrade pip pyinstaller
 
-      - name: 准备配置目录（保持路径无空格，macOS 打包器对空格敏感）
-        run: |
-          python -c "import sys; print(sys.version)"
-
-      - name: PyInstaller 打包
-        env:
-          ARCHS: ${{ matrix.arch == 'aarch64' && 'arm64' || matrix.arch }}
+      - name: 构建单文件可执行程序
         run: |
           pyinstaller --noconfirm --clean torsocks5.spec
           ls -la dist/
 
-      - name: 冒烟测试（版本 + 离线自检）
+      - name: 随包附带 tor 运行时（让用户「打开即用」）
+        shell: bash
+        env:
+          TOR_PKG: ${{ matrix.tor_pkg }}
+        run: |
+          set -e
+          URL="https://dist.torproject.org/tor-${TOR_VERSION}/${TOR_PKG}-${TOR_VERSION}.tar.gz"
+          echo "下载 tor: $URL"
+          mkdir -p /tmp/torpkg
+          if curl -fsSL --retry 3 -o /tmp/torpkg/tor.tar.gz "$URL"; then
+            mkdir -p dist/tor
+            tar -xzf /tmp/torpkg/tor.tar.gz -C dist/tor --strip-components=1
+            # macOS/Linux 的可执行位；Windows 无所谓
+            chmod +x dist/tor/tor 2>/dev/null || true
+            echo "tor 已随包附带："
+            ls dist/tor | head -20
+          else
+            echo "::warning::下载 tor 失败，产物将不含 tor（用户需自行安装）"
+          fi
+
+      - name: 随包附带文档与脚本
+        shell: bash
+        run: |
+          cp -f README.md LICENSE dist/
+          cp -f run.sh run.bat dist/ 2>/dev/null || true
+          chmod +x dist/run.sh 2>/dev/null || true
+
+      - name: 冒烟测试（版本 + 离线自检 + 插件入口）
         shell: bash
         run: |
           set -e
@@ -71,23 +95,30 @@ jobs:
           fi
           echo "--- --version ---"
           "$BIN" --version
-          echo "--- selftest（离线端到端）---"
+          echo "--- selftest（离线端到端：SOCKS5 + meek 隧道 + PT 握手）---"
           "$BIN" selftest
-          echo "--- doctor 的插件路径检查 ---"
-          "$BIN" doctor --port 19099 || true
+          echo "--- 传输插件入口（模拟 tor 调用）---"
+          out=$(TOR_PT_METHODS=meek TOR_PT_MANAGED_TRANSPORT_VER=1 timeout 5 "$BIN" --transport-plugin 2>/dev/null || true)
+          echo "$out"
+          echo "$out" | grep -q "CMETHODS DONE" || { echo "::error::插件入口没有完成 PT 握手"; exit 1; }
+          if [ -x ./dist/tor/tor ] || [ -f ./dist/tor/tor.exe ]; then
+            echo "--- 随包 tor 可用性 ---"
+            (cd dist && ./tor/tor --version 2>/dev/null || ./tor/tor.exe --version) | head -1
+          fi
 
-      - name: 压缩
+      - name: 压缩成「打开即用」包
         shell: bash
         run: |
           set -e
-          cd dist
           VERSION="${{ inputs.version || github.ref_name }}"
           VERSION="${VERSION#v}"
           NAME="TorSOCKS5-${VERSION}-${{ matrix.label }}"
+          cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
-            zip -q -r "${NAME}.zip" TorSOCKS5.exe README.md LICENSE
+            tar -czf "${NAME}.tar.gz" *
+            7z a -tzip "${NAME}.zip" . >/dev/null
           else
-            tar -czf "${NAME}.tar.gz" TorSOCKS5 README.md LICENSE
+            tar -czf "${NAME}.tar.gz" *
           fi
           ls -la
 
@@ -95,8 +126,8 @@ jobs:
         with:
           name: TorSOCKS5-${{ matrix.label }}
           path: |
-            dist/*.zip
             dist/*.tar.gz
+            dist/*.zip
           retention-days: 30
           if-no-files-found: error
 
@@ -109,46 +140,93 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: 汇总产物
+
+      - name: 汇总产物并生成校验和
         run: |
+          set -e
           mkdir -p release
-          find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp {} release/ \;
-          ls -la release/
-          # 生成校验和
-          cd release && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release/ \;
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          ls -la
+          echo "--- SHA256SUMS.txt ---"
+          cat SHA256SUMS.txt
+
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ inputs.version || github.ref_name }}
+          name: ${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
           tag_name: ${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
           draft: false
           prerelease: false
           body: |
-            ## TorSOCKS5
+            ## TorSOCKS5 ${{ inputs.version || github.ref_name }}
 
-            通过 **meek 网桥**连接 Tor 网络的 SOCKS5 代理，meek 传输为纯 Python 实现。
+            通过 **meek 网桥**连接 Tor 网络的 SOCKS5 代理。meek 传输为**纯 Python 实现**，
+            零第三方依赖，不需要 Go、不需要编译、不需要 Tor Browser。
+
+            每个压缩包都是**打开即用**的完整包：内含 `TorSOCKS5` 可执行程序 +
+            Tor 官方运行时（tor），解压后直接运行即可。
 
             ### 下载
+
             | 平台 | 文件 |
             | --- | --- |
-            | Windows x86_64 | `TorSOCKS5-<版本>-windows-x86_64.zip` → `TorSOCKS5.exe` |
+            | Windows x86_64 | `TorSOCKS5-<版本>-windows-x86_64.zip`（或 `.tar.gz`） |
             | macOS Apple Silicon | `TorSOCKS5-<版本>-macos-arm64.tar.gz` |
             | macOS Intel | `TorSOCKS5-<版本>-macos-x86_64.tar.gz` |
             | Linux x86_64 | `TorSOCKS5-<版本>-linux-x86_64.tar.gz` |
             | Linux ARM64 | `TorSOCKS5-<版本>-linux-aarch64.tar.gz` |
 
-            ### 快速开始
+            校验和见附件 `SHA256SUMS.txt`（`sha256sum -c SHA256SUMS.txt`）。
+
+            ### 三步开始
+
             ```bash
             # 1. 自检
-            TorSOCKS5 doctor
-            # 2. 导入你在 https://bridges.torproject.org 获取的 meek 网桥行
-            TorSOCKS5 bridges add "Bridge meek 0.0.2.0:3 url=... front=..."
+            ./TorSOCKS5 doctor
+            # 2. 导入你在 https://bridges.torproject.org 申请的 meek 网桥行
+            ./TorSOCKS5 bridges add "Bridge meek 0.0.2.0:3 url=... front=..."
             # 3. 启动
-            TorSOCKS5 run
+            ./TorSOCKS5 run
             ```
-            然后用 `socks5h://127.0.0.1:9051` 作为代理。
 
-            > macOS 首次运行可能需要在「系统设置 → 隐私与安全性」中放行未签名的程序。
-            > 校验和见附件 `SHA256SUMS.txt`。
+            然后把应用代理设为 `socks5h://127.0.0.1:9051`（用 `socks5h://`
+            让域名也由代理解析，避免本地 DNS 泄漏）。
+
+            ### ⚠️ 关于速度：慢是正常现象
+
+            **meek 本身就很慢，这不是程序的缺陷。** 原因是它的协议设计：
+            每传输 64KB 就必须完成一次完整的 HTTP 请求/响应往返，吞吐上限
+            等于 `64KB ÷ RTT`。在高延迟线路上实测约 **25 KB/s**。
+
+            因此：
+
+            * **首次启动需要 10～30 分钟**。tor 要下载约 7MB 的目录信息
+              （权威共识 + 9458 个中继微描述符），meek 上这个过程很慢。
+              进度会显示在 `50% ~ 99% (loading_descriptors)`，只要数字还在涨
+              就说明一切正常。第二次启动复用缓存会快很多。
+            * 想要更长的等待时间：`./TorSOCKS5 run --ready-timeout 1800`
+            * 想不等引导完成就开始监听：`./TorSOCKS5 run --ready-timeout 0 --keep-going`
+            * **需要速度请换传输**：obfs4 / snowflake / webtunnel 都比 meek 快得多，
+              本项目对这些网桥行是透传支持的。
+            * 引导期间 tor 日志里刷屏的 `no running bridges known` 也是正常的
+              背压现象，不是故障。
+
+            ### macOS 首次运行
+
+            未签名程序会被 Gatekeeper 拦截，二选一：
+
+            ```bash
+            # 右键点击 → 打开，或在「系统设置 → 隐私与安全性」中点「仍要打开」
+            xattr -dr com.apple.quarantine TorSOCKS5   # 命令行放行
+            ```
+
+            ### 需要帮助
+
+            * 完整文档：<https://github.com/Mofan2020/TorSOCKS5#readme>
+            * 环境自检：`./TorSOCKS5 doctor`
+            * 离线自检：`./TorSOCKS5 selftest`
+            * 常见问题与故障排查：见 README「故障排查」一节
           files: |
             release/*
