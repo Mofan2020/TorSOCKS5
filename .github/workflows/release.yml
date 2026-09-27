@@ -118,10 +118,11 @@ jobs:
                   fi
                 done
                 # 动态库：macOS 是 *.dylib，Linux 是 *.so.*，都要带上，
-                # 否则 tor 会在运行时报 "error while loading shared libraries"。
-                for LIB in /tmp/torbundle_inner/*.dylib /tmp/torbundle_inner/*.so /tmp/torbundle_inner/*.so.*; do
-                  if [ -e "$LIB" ]; then cp -f "$LIB" dist/tor/ || true; fi
-                done
+                # 否则 tor 启动时报 "error while loading shared libraries"。
+                # 不同版本 bundle 的库可能放在不同层级，所以递归找一遍。
+                find /tmp/torbundle_inner -maxdepth 3 -type f \
+                  \( -name '*.dylib' -o -name '*.so' -o -name '*.so.*' \) \
+                  -exec cp -f {} dist/tor/ \; 2>/dev/null || true
                 cp -f "/tmp/torbundle_inner/$BIN_NAME" "dist/tor/$BIN_NAME"
               fi
               rm -rf /tmp/torbundle_inner
@@ -174,7 +175,12 @@ jobs:
           if [ -n "$TOR_BIN" ]; then
             echo "--- 随包 tor 可用性: $TOR_BIN ---"
             chmod +x "$TOR_BIN" 2>/dev/null || true
-            "$TOR_BIN" --version 2>&1 | head -1
+            # 与程序内部一致：随包 tor 的动态库在同目录，需要显式指定搜索路径
+            if [ "${{ runner.os }}" = "Linux" ]; then
+              LD_LIBRARY_PATH="$(cd "$(dirname "$TOR_BIN")" && pwd)" "$TOR_BIN" --version 2>&1 | head -1
+            else
+              "$TOR_BIN" --version 2>&1 | head -1
+            fi
           else
             echo "本平台产物未附带 tor（包内应含安装说明）"
             ls dist/*.md 2>/dev/null || true
