@@ -174,7 +174,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    # 允许直接以 `meek_pt.py --transport-plugin ...` 的形式启动
+    args_list = [item for item in args_list if item != "--transport-plugin"]
+    args = build_parser().parse_args(args_list)
     plugin = TransportPlugin(
         url=args.url,
         front=args.front,

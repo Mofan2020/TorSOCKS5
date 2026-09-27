@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -46,6 +47,52 @@ class WindowsConsoleEncodingTest(unittest.TestCase):
     def test_selftest_under_gbk(self):
         proc = self._run(["selftest"], "cp936")
         self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+
+    def test_transport_plugin_entry_works_from_source(self):
+        """``--transport-plugin`` 在源码模式下也必须走 PT 协议。
+
+        曾经只在 ``sys.frozen`` 时才处理该开关，导致源码运行时被当成
+        ``run`` 子命令（报「端口已被占用」），而 torrc 里的插件命令在
+        打包前后用的是不同形式，两种都要能用。
+        """
+        env = dict(os.environ)
+        env["TOR_PT_METHODS"] = "meek"
+        env["TOR_PT_MANAGED_TRANSPORT_VER"] = "1"
+        env["PYTHONPATH"] = ROOT + os.pathsep + env.get("PYTHONPATH", "")
+        env["PYTHONUNBUFFERED"] = "1"
+        for command in (
+            [sys.executable, os.path.join(ROOT, "torsocks5_cli.py"), "--transport-plugin"],
+            [sys.executable, os.path.join(ROOT, "meek_pt.py")],
+        ):
+            proc = subprocess.Popen(
+                command, cwd=ROOT, env=env,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, bufsize=1,
+            )
+            try:
+                lines = []
+                deadline = time.time() + 30
+                while time.time() < deadline:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    line = line.strip()
+                    lines.append(line)
+                    if line == "CMETHODS DONE":
+                        break
+                self.assertIn("VERSION 1", lines, "%s 未输出 VERSION: %s" % (command, lines))
+                self.assertIn("CMETHODS DONE", lines, "%s 未完成握手: %s" % (command, lines))
+                self.assertTrue(
+                    any(item.startswith("CMETHOD meek socks5 127.0.0.1:") for item in lines),
+                    "%s 未公布 CMETHOD: %s" % (command, lines),
+                )
+            finally:
+                proc.stdin.close()
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
 
 
 class ShimPathTest(unittest.TestCase):

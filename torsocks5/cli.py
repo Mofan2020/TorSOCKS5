@@ -752,10 +752,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    if getattr(sys, "frozen", False) and "--transport-plugin" in sys.argv:
+    # 作为 tor 的 meek 传输插件被启动时，走 PT 协议而不是命令行界面。
+    # 冻结（PyInstaller）与源码运行都要支持，因为 torrc 里用的命令形式不同。
+    if "--transport-plugin" in (sys.argv[1:] if argv is None else argv):
         from .meek.pt import main as pt_main
 
-        return pt_main(sys.argv[1:])
+        args_list = list(sys.argv[1:] if argv is None else argv)
+        return pt_main([item for item in args_list if item != "--transport-plugin"])
 
     parser = build_parser()
     args = parser.parse_args(argv)

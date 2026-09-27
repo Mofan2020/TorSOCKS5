@@ -384,8 +384,13 @@ def _pt_check() -> None:
     env["TOR_PT_MANAGED_TRANSPORT_VER"] = "1"
     env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
     env["PYTHONUNBUFFERED"] = "1"
+    # 源码运行时用 `python -m`；PyInstaller 打包后没有模块入口，改用 --transport-plugin
+    if getattr(sys, "frozen", False):
+        command = [sys.executable, "--transport-plugin"]
+    else:
+        command = [sys.executable, "-m", "torsocks5.meek"]
     process = subprocess.Popen(
-        [sys.executable, "-m", "torsocks5.meek"],
+        command,
         cwd=root, env=env,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, bufsize=1,
