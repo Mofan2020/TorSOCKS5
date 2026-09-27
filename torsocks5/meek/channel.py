@@ -111,6 +111,7 @@ class _Http:
         front: Optional[str] = None,
         connect_timeout: float = 20.0,
         read_timeout: float = 30.0,
+        busy_read_timeout: Optional[float] = None,
         user_agent: Optional[str] = DEFAULT_USER_AGENT,
     ) -> None:
         parts = urlsplit(url)
@@ -126,6 +127,9 @@ class _Http:
         self.dial_host = front or parts.hostname
         self.connect_timeout = connect_timeout
         self.read_timeout = read_timeout
+        self._busy_read_timeout = (
+            busy_read_timeout if busy_read_timeout is not None else max(read_timeout, 120.0)
+        )
         self.user_agent = user_agent
         self._sock: Optional[socket.socket] = None
         self._rfile: Optional[IO[bytes]] = None
@@ -207,6 +211,11 @@ class _Http:
     def post(self, body: bytes, session_id: str) -> Tuple[int, bytes]:
         """发送一次 POST，返回 ``(状态码, 响应体)``。"""
         sock = self._ensure_socket()
+        # 有数据要发时说明通道是「忙」的，给更长的时间等响应
+        try:
+            sock.settimeout(self._busy_read_timeout if body else self.read_timeout)
+        except OSError:
+            pass
         req = [
             "POST %s HTTP/1.1" % self.path,
             "Host: %s" % self.host_header,
@@ -300,6 +309,7 @@ class _Http:
             try:
                 chunk = self._rfile.read(want - got)
             except socket.timeout as exc:
+                # 超时属于「连接层面的问题」，交给上层重连，而不是直接终止通道
                 self.close()
                 raise MeekConnectError("读取响应超时: %s" % exc) from exc
             except OSError as exc:
@@ -307,7 +317,7 @@ class _Http:
                 raise MeekConnectError("读取响应失败: %s" % exc) from exc
             if not chunk:
                 self.close()
-                raise MeekProtocolError("响应体不完整（收到 %d/%d 字节）" % (got, want))
+                raise MeekConnectError("响应体不完整（收到 %d/%d 字节）" % (got, want))
             chunks.append(chunk)
             got += len(chunk)
         return b"".join(chunks)
@@ -350,6 +360,7 @@ class MeekChannel:
         *,
         connect_timeout: float = 20.0,
         read_timeout: float = 30.0,
+        busy_read_timeout: Optional[float] = None,
         user_agent: Optional[str] = DEFAULT_USER_AGENT,
         max_tries: int = MAX_TRIES,
         max_reconnects: int = 20,
@@ -365,12 +376,18 @@ class MeekChannel:
             front=front,
             connect_timeout=connect_timeout,
             read_timeout=read_timeout,
+            busy_read_timeout=busy_read_timeout,
             user_agent=user_agent,
         )
         self._max_tries = max_tries
         self._max_retries = max(1, min(max_tries, 6))
         self._max_reconnects = max_reconnects
         self._retry_delay = retry_delay
+        # meek 链路的 RTT 很高（每次往返都可能好几秒）。空闲轮询用较短的超时
+        # 便于及时发现断连；有数据在传时则放宽，避免大响应被误判为超时。
+        self._busy_read_timeout = (
+            busy_read_timeout if busy_read_timeout is not None else max(read_timeout, 120.0)
+        )
         self._on_status = on_status
         self._on_error = on_error
         self._wr: queue.Queue[Optional[bytes]] = queue.Queue()

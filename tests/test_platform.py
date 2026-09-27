@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 import os
 import subprocess
 import sys
@@ -62,7 +61,7 @@ class ShimPathTest(unittest.TestCase):
 
     def test_shim_is_created_for_spaced_command(self):
         from torsocks5 import config as config_mod
-        from torsocks5.tor.manager import TorProcess, ShimError
+        from torsocks5.tor.manager import ShimError, TorProcess
 
         tor = TorProcess(config_mod.Config({}), [])
         spaced = ['/some path/python3', '/other path/meek_pt.py']
