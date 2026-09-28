@@ -10,10 +10,22 @@ cd TorSOCKS5
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-ruff check .          # 静态检查
-mypy torsocks5        # 类型检查
-python -m unittest discover -s tests -v   # 测试
-python torsocks5_cli.py selftest          # 离线端到端自检
+ruff check .                              # 静态检查
+mypy torsocks5                            # 类型检查
+python -m unittest discover -s tests -v   # 全部单元测试（离线）
+python scripts/check_docs.py              # 文档 ↔ 代码一致性（CI 会拦）
+python scripts/e2e_smoke.py               # CLI 级端到端冒烟：起真中继 + 真代理，经 SOCKS5 取数据
+python torsocks5_cli.py selftest          # 离线端到端自检（SOCKS5 + meek + PT 握手）
+```
+
+改动中继实现（`deploy/`）时还要跑它们各自的测试与跨语言互通：
+
+```bash
+cd deploy/cloudflare && node --test                                   # Worker，54 个用例
+cd deploy/deno && deno test --allow-net --allow-env --allow-read       # Deno，23 个用例
+python scripts/interop_relay.py \
+    --start "cd deploy/deno && deno run --allow-net --allow-env main.ts" \
+    --env TSU_PORT=8791 --env TSU_TOKEN=devtoken --port 8791 --token devtoken
 ```
 
 ## 项目约定
@@ -23,11 +35,20 @@ python torsocks5_cli.py selftest          # 离线端到端自检
 * **支持 Python 3.8+**，且要在 Windows / macOS / Linux 上都能跑。
   * 不要用 3.9+ 的内建泛型注解（`list[int]`）除非有 `from __future__ import annotations`
   * 不要依赖 `os.sys`（应 `import sys` 后用 `sys.platform`）
-  * 输出中文/符号前确保 `_force_utf8_output()` 生效（Windows 控制台是本地代码页）
+  * 输出中文/符号前确保 `torsocks5.log.force_utf8_output()` 已生效
+    （Windows 控制台是本地代码页 cp936，直接打印 `✓`/`✗` 会 `UnicodeEncodeError`）。
+    **不要各写一份**：CLI 与 `scripts/*.py` 共用这一个实现。
 * **不要在日志里记录用户访问的域名**。当前只记录 `CONNECT host:port` 这一层信息。
 * 注释和文档用中文，与现有代码保持一致。
+* 文档不是可选项：改了 CLI 选项、配置项、错误码、路由名或测试数量，
+  就要同步改 README / `docs/`，`scripts/check_docs.py` 会逐项核对
+  （连「某个选项只在 `--help` 里存在」和「写了没链接的孤儿文档」都会拦）。
 
 ## 协议相关的改动要格外小心
+
+项目里有**两套线协议**，都要求与既有实现兼容：
+
+### 1. meek 传输（Tor 官方）
 
 meek 传输与 Tor 官方的 [pluggable-transports/meek](https://git.torproject.org/pluggable-transports/meek.git)
 **线协议必须兼容**。改动 `torsocks5/meek/channel.py` 或 `socks_server.py` 时：
@@ -39,13 +60,29 @@ meek 传输与 Tor 官方的 [pluggable-transports/meek](https://git.torproject.
 已知踩过的坑，都在 `tests/test_http_transport.py` 里有对应的回归用例
 （例如 chunked 响应必须读到终止块，否则 keep-alive 连接会永久错位）。
 
+### 2. TSU/1 隧道协议（路由 2 / 3）
+
+`docs/tunnel-protocol.md` 是**唯一真相源**，有四个实现同时按它编解码：
+Python 客户端、Python 中继（`torsocks5/tunnel/`）、Cloudflare Worker（`deploy/cloudflare/`）、
+Deno 中继（`deploy/deno/`）。因此：
+
+1. **先改协议文档**，再改四个实现；只改一端的 PR 不会被接受。
+2. 四端都要有对应测试（`tests/test_tunnel_*.py`、`deploy/*/…test*`），
+   再加一次跨语言互通：`python scripts/interop_relay.py …`。
+3. 错误码、opcode、上限（64 KiB 消息 / 32 KiB 分片 / 1 MiB 背压）这些数字
+   在文档与代码里必须一致——`check_docs.py` 会核对错误码与帧类型。
+
 ## 提交前自查
 
 ```bash
-ruff check . && mypy torsocks5 && python -m unittest discover -s tests
+ruff check . && mypy torsocks5 \
+  && python -m unittest discover -s tests \
+  && python scripts/check_docs.py && python scripts/check_docs.py --selftest \
+  && python scripts/e2e_smoke.py
 ```
 
-三项都通过再提 PR。CI 会在 ubuntu / macos / windows × Python 3.8 / 3.12 上跑同一批测试。
+全绿再提 PR。CI 会在 ubuntu / macos / windows × Python 3.8 / 3.12 上跑同一批测试，
+外加中继实现的测试与跨语言互通验证。
 
 ## 报告问题
 

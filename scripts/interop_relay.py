@@ -38,6 +38,7 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from torsocks5.log import force_utf8_output  # noqa: E402
 from torsocks5.tunnel.client import (  # noqa: E402
     TargetNotAllowed,
     TunnelClient,
@@ -113,12 +114,7 @@ def terminate_tree(proc: subprocess.Popen, grace: float = 8.0) -> str:
 
 
 def main() -> int:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            # UTF-8：Windows 默认窄编码打不出中文与 ✓/✗；行缓冲让子进程日志实时可见
-            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
-        except (AttributeError, ValueError, OSError):
-            pass
+    force_utf8_output(line_buffering=True)  # Windows 编码 + 子进程日志实时可见
     parser = argparse.ArgumentParser(description="Python 客户端 ↔ JS/TS 中继 互通验证")
     parser.add_argument("--start", required=True, help="启动中继的 shell 命令")
     parser.add_argument("--url", default="", help="客户端连接地址（默认 ws://127.0.0.1:<port>/tsu）")

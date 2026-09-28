@@ -155,10 +155,12 @@ torsocks5 relay serve --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem
 torsocks5 relay serve --allow-all                    # 关闭白名单：任意 host:port（私有地址仍被拦）
 torsocks5 relay serve --allow-host "example.com"     # 追加白名单
 torsocks5 relay serve --allow-port 8080              # 追加端口
+torsocks5 relay serve --allow-private                # ⚠️ 放开私有地址，仅供本机联调
 ```
 
-无论怎么配，**私有地址/回环/链路本地/CGNAT 一律拒绝**（`BLOCKED_TARGET`）——否则中继会变成
-打穿内网的跳板。
+默认**私有地址/回环/链路本地/CGNAT 一律拒绝**（`BLOCKED_TARGET`）——否则中继会变成
+打穿内网的跳板。唯一的例外是 `--allow-private`（启动时打印警告），它只为本机调试而存在：
+单元测试与冒烟测试要连 `127.0.0.1` 上的假目标。对外提供服务的中继不要开。
 
 ---
 

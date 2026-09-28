@@ -405,9 +405,12 @@ torsocks5 relay serve --listen 0.0.0.0 --port 9052 --token <随机串> \
 torsocks5 relay serve --allow-all                  # 关闭白名单：任意 host:port
 torsocks5 relay serve --allow-host "example.com"    # 追加白名单
 torsocks5 relay serve --allow-port 8080             # 追加端口（默认 443,80,22,9418）
+torsocks5 relay serve --allow-private               # ⚠️ 放开私有地址限制，**仅供本机联调**
 ```
 
-无论怎么配，**私有地址 / 回环 / 链路本地 / CGNAT 一律拒绝**，否则中继就是打穿内网的跳板。
+默认情况下**私有地址 / 回环 / 链路本地 / CGNAT 一律拒绝**，否则中继就是打穿内网的跳板。
+唯一的例外是 `--allow-private`：它存在只是为了本机调试（单元测试与冒烟测试要连
+`127.0.0.1` 上的假目标），启动时会打印警告。**对外提供服务的中继不要开这个开关。**
 
 ### 智能分流
 
@@ -434,6 +437,7 @@ torsocks5 [全局参数] <子命令> [子命令参数]
   --log-file PATH   同时把日志写入文件
   -v, --verbose     详细日志（含 tor 与 meek 内部事件）
   -V, --version     版本号
+  --transport-plugin  把自己当作可插拔传输插件启动（tor 会这么调用，普通用户不用管）
 ```
 
 ### `run` — 启动代理
@@ -479,7 +483,8 @@ torsocks5 relay serve --tls-cert cert.pem --tls-key key.pem   # 直接跑 wss://
 ```
 
 中继自带 `GET /healthz`（返回协议版本、并发上限等，无需令牌）和
-`GET /`（人肉可读的自检页）。**私有地址永远拒绝**，即使开了 `--allow-all`。
+`GET /`（人肉可读的自检页）。**私有地址默认一律拒绝**，即使开了 `--allow-all`；
+只有本机联调才用的 `--allow-private` 能放开它。
 
 ### `tunnel` — 探测中继是否真的可用
 
@@ -488,6 +493,9 @@ torsocks5 tunnel probe --route cf-relay          # 健康检查 + 真连 4 个�
 torsocks5 tunnel check --route self-relay        # 更长的目标清单（11 个）
 torsocks5 tunnel check --relay-url wss://... --relay-token xxx
 torsocks5 tunnel check --hosts "github.com:443,pypi.org:443" --http
+torsocks5 tunnel check --front cdn.example.com   # 域前置：TLS SNI 用这个域名
+torsocks5 tunnel check --insecure                # 不校验证书（中继用自签证书时）
+torsocks5 tunnel check --timeout 30              # 单个目标的超时秒数，默认 15
 ```
 
 它是**真的建流、真的转发**（`--http` 还会发一个 HTTP 请求验证双向数据），
@@ -524,6 +532,7 @@ torsocks5 bridges add "Bridge meek 0.0.2.0:3 url=... front=..."
 torsocks5 bridges rm cdn77.org               # 按子串删除
 torsocks5 bridges import --clipboard         # 或 --file / --url
 torsocks5 bridges test "Bridge meek ..."     # 真的启动 tor 验证这条网桥
+torsocks5 bridges test "Bridge meek ..." --timeout 300   # 等更久，默认 120 秒
 torsocks5 bridges normalize "..."            # 校验并规范化一行网桥配置
 torsocks5 bridges clipboard                  # 打印剪贴板内容
 ```
@@ -534,6 +543,7 @@ torsocks5 bridges clipboard                  # 打印剪贴板内容
 
 ```bash
 torsocks5 config init        # 生成带注释的配置模板
+torsocks5 config init --force   # 已存在时覆盖
 torsocks5 config show        # 打印当前生效配置
 torsocks5 config show --format json
 torsocks5 config path
@@ -556,6 +566,7 @@ torsocks5 fetch-tor                              # 自动挑选平台对应的�
 torsocks5 fetch-tor --version 0.4.8.12
 torsocks5 fetch-tor --file ~/Downloads/tor-expert-bundle-....tar.gz
 torsocks5 fetch-tor --mirror https://mirror.example.org
+torsocks5 fetch-tor --dest /opt/tor-bundle       # 指定解压目录
 ```
 
 下载完成后会提示把路径写进配置：
@@ -752,8 +763,13 @@ deploy/
 
 docs/
 ├── tunnel-protocol.md     TSU/1 协议规范（Python / Worker / Deno 三端唯一真相源）
-└── routes.md              三种路由的对比、限制、实测与排障
+├── routes.md              三种路由的对比、限制、实测与排障
+└── notes.md               实施笔记：本版加了什么、取舍、没动的与原因
 ```
+
+同一个仓库里的其他文档：`deploy/cloudflare/README.md`（Worker 部署）、
+`deploy/deno/README.md`（Deno Deploy 部署）。要改这个项目，先读
+[CONTRIBUTING.md](CONTRIBUTING.md)（开发环境、项目约定、协议改动的注意事项）。
 
 ### meek 隧道协议
 
@@ -820,6 +836,8 @@ Cloudflare Worker、Deno 中继四个实现都以那份文档为准。
 
 ```
 ClientTransportPlugin meek,meek_lite,meek_azure exec /usr/bin/python3 /path/to/meek_pt.py
+# 用打包好的可执行程序时，程序自己就是插件入口（多一个 --transport-plugin 参数）
+ClientTransportPlugin meek,meek_lite,meek_azure exec /path/to/TorSOCKS5 --transport-plugin
 ```
 
 tor 启动 `meek_pt.py` 后走 PT 行协议握手（`VERSION` / `CMETHOD` / `AUTHENTICATE` / `PROXY`），
@@ -1057,8 +1075,8 @@ CLI 级端到端冒烟、文档一致性校验，以及三类集成测试：
 * 默认只监听 `127.0.0.1` 且默认免认证。**若要监听 `0.0.0.0`，请务必设置
   `username`/`password` 和 `allow_from`**，否则你的代理会对整个网络开放，成为严重的安全问题。
 * **中继（`relay serve`）对外监听时必须设令牌。** 未设令牌且监听非回环地址时程序会明确警告，
-  但不会阻止你——那等于给任何人一个开放代理。另外中继**永远拒绝连接私有地址**，
-  避免被打穿成内网跳板。
+  但不会阻止你——那等于给任何人一个开放代理。另外中继**默认一律拒绝连接私有地址**，
+  避免被打穿成内网跳板（只有本机联调用的 `--allow-private` 能放开）。
 * 日志里不会记录你访问的域名（只有 `CONNECT host:port` 的连接级信息），
   且已给 tor 开了 `SafeLogging`。中继侧默认同样只记录「流 id + 字节数」，
   **不记录目标域名**；只有显式 `-v` 运行时才逐条打印目标，便于排障。

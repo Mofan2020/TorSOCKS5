@@ -39,20 +39,8 @@ PROGRESS_WIDTH = log_mod.PROGRESS_WIDTH
 
 
 def _force_utf8_output() -> None:
-    """把标准输出/错误切到 UTF-8。
-
-    Windows 控制台默认使用本地代码页（cp936 / cp1252），直接输出中文与非
-    ASCII 符号会抛 UnicodeEncodeError，``--help`` 甚至会因此崩溃。
-    必须在构造 argparse 解析器之前调用（argparse 会在 parse_args 时打印帮助）。
-    """
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is None:
-            continue
-        try:
-            reconfigure(encoding="utf-8", errors="replace")
-        except (ValueError, OSError, AttributeError):  # 已被重定向到不支持的对象
-            pass
+    """把标准输出/错误切到 UTF-8（实现见 ``log_mod.force_utf8_output``）。"""
+    log_mod.force_utf8_output()
 
 
 _force_utf8_output()

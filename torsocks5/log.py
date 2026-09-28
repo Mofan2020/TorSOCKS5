@@ -21,6 +21,30 @@ _COLORS = {
 }
 
 
+def force_utf8_output(line_buffering: bool = False) -> None:
+    """把标准输出/错误切到 UTF-8。
+
+    Windows 控制台默认使用本地代码页（cp936 / cp1252），直接输出中文与非
+    ASCII 符号（✓ / ✗ 之类）会抛 UnicodeEncodeError，``--help`` 甚至会因此崩溃。
+
+    CLI 必须在构造 argparse 解析器之前调用（argparse 会在 parse_args 时打印帮助）；
+    仓库里的脚本（``scripts/*.py``）也共用这个实现，不要各写一份。
+
+    ``line_buffering=True`` 让输出立刻可见——起子进程、看子进程日志的脚本需要它。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            if line_buffering:
+                reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+            else:
+                reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError, AttributeError):  # 已被重定向到不支持的对象
+            pass
+
+
 def supports_color(stream: TextIO) -> bool:
     if os.environ.get("NO_COLOR"):
         return False
