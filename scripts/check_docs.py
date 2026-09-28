@@ -220,6 +220,12 @@ def selftest() -> int:
 
 
 def main() -> int:
+    # Windows 控制台的默认编码打不出中文与 ✓/✗（CI 上会 UnicodeEncodeError），统一切 UTF-8
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
     parser = argparse.ArgumentParser(description="文档与代码一致性校验")
     parser.add_argument("--selftest", action="store_true", help="用负向测试证明校验器会拦")
     args = parser.parse_args()

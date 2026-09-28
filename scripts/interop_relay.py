@@ -115,8 +115,9 @@ def terminate_tree(proc: subprocess.Popen, grace: float = 8.0) -> str:
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(line_buffering=True)  # 让子进程日志实时可见
-        except (AttributeError, ValueError):
+            # UTF-8：Windows 默认窄编码打不出中文与 ✓/✗；行缓冲让子进程日志实时可见
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        except (AttributeError, ValueError, OSError):
             pass
     parser = argparse.ArgumentParser(description="Python 客户端 ↔ JS/TS 中继 互通验证")
     parser.add_argument("--start", required=True, help="启动中继的 shell 命令")
@@ -144,9 +145,12 @@ def main() -> int:
     try:
         port_ok = wait_port(args.port, timeout=args.timeout)
         health_ok = port_ok and wait_health(args.port, timeout=15.0)
-        results.append(("中继起来并 /healthz 正常", health_ok, "端口未就绪" if not port_ok else "健康检查失败"))
+        results.append(("中继起来并 /healthz 正常", health_ok,
+                        "端口未就绪" if not port_ok else "健康检查失败"))
         if not health_ok:
-            raise RuntimeError("中继没起来，无法继续")
+            raise RuntimeError("中继没在 %d 端口监听——若中继用的是别的端口，"
+                               "请检查 --start 里有没有把端口/令牌传给中继"
+                               "（Deno 与 Worker 都认 TSU_PORT / TSU_TOKEN）" % args.port)
 
         client = TunnelClient(url, args.token, links=1, max_streams=6, open_timeout=20.0,
                               idle_timeout=30.0, auto_reconnect=False)

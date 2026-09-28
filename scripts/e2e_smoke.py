@@ -95,7 +95,21 @@ def build_config(path: str, proxy_port: int, relay_port: int) -> None:
         )
 
 
+def force_utf8_output() -> None:
+    """把 stdout/stderr 切到 UTF-8。
+
+    Windows 控制台/重定向流默认是 cp936 之类的窄编码，直接打印中文或 ✓/✗ 会
+    抛 UnicodeEncodeError（CI 上就是这么红的）。三平台都统一成 UTF-8。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        except (AttributeError, ValueError, OSError):  # pragma: no cover - 极老的解释器
+            pass
+
+
 def main() -> int:
+    force_utf8_output()
     parser = argparse.ArgumentParser(description="CLI 级端到端冒烟")
     parser.add_argument("--binary", default="",
                         help="要测试的可执行文件/解释器入口（默认用当前解释器跑 torsocks5_cli.py）；"

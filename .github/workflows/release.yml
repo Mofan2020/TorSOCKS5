@@ -157,6 +157,8 @@ jobs:
 
       - name: 冒烟测试（版本 + 离线自检 + 插件入口 + 三种路由）
         shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
           set -e
           if [ "${{ runner.os }}" = "Windows" ]; then
