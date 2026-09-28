@@ -259,13 +259,30 @@ jobs:
           body: |
             ## TorSOCKS5 ${{ inputs.version || github.ref_name }}
 
-            通过 **meek 网桥**连接 Tor 网络的 SOCKS5 代理。meek 传输为**纯 Python 实现**，
-            零第三方依赖，不需要 Go、不需要编译、不需要 Tor Browser。
+            跨平台 SOCKS5 本地代理，**三种流量路由方式可选**（`--route` 切换，默认不变）：
 
-            每个压缩包都是**打开即用**的完整包：内含 `TorSOCKS5` 可执行程序 +
-            Tor 官方运行时（tor），解压后直接运行即可。
+            | 路由 | 出口 | 速度 | 适用 |
+            | --- | --- | --- | --- |
+            | `tor-meek`（默认） | Tor 网络 + 纯 Python meek 网桥 | 实测约 **25 KB/s** | 最抗封锁，但慢；首次引导要 10~30 分钟 |
+            | `cf-relay` | Cloudflare Worker 中转 | 取决于 Worker | 免费额度内可用；⚠️ 见下方条款警告 |
+            | `self-relay` | 自建 / 多平台中继（本机、VPS、Deno Deploy） | 实测本机中继 **798 KB/s**（直连对照 742 KB/s） | 快、可控、不依赖 Tor |
+
+            > **仅供学习，作者不负责，违法使用后果自负。**
+            > 建议只用于辅助访问 GitHub、Huggingface、Docker Hub 等学习类网站。
+
+            ### ⚠️ 两条必须知道的限制
+
+            1. **`cf-relay` 违反 Cloudflare 自助服务条款 2.2.1(j)**（明文禁止用其服务提供
+               VPN 或类似代理服务）：账号连同域名、Worker、DNS 都有可能被直接封禁，申诉通常无效。
+               本仓库提供的 Worker 形态仅供个人学习与协议实现研究，想稳定跑中继请用
+               `self-relay`（架在自己的机器或自购 VPS 上，没有这条限制）。
+            2. **隧道路由（`cf-relay` / `self-relay`）只承载 TCP**，这两种路由下 UDP ASSOCIATE
+               会被明确拒绝（协议设计，不是故障）。
 
             ### 下载
+
+            每个压缩包都是**打开即用**的完整包：内含 `TorSOCKS5` 可执行程序 +
+            Tor 官方运行时（tor）+ 文档与 `deploy/` 中继部署物，解压后直接运行。
 
             | 平台 | 文件 |
             | --- | --- |
@@ -280,35 +297,41 @@ jobs:
             ### 三步开始
 
             ```bash
-            # 1. 自检
+            # 1. 自检（看看本机环境和三种路由各自能不能用）
             ./TorSOCKS5 doctor
-            # 2. 导入你在 https://bridges.torproject.org 申请的 meek 网桥行
+
+            # 2a. 默认：Tor + meek 网桥（导入你在 https://bridges.torproject.org 申请的网桥行）
             ./TorSOCKS5 bridges add "Bridge meek 0.0.2.0:3 url=... front=..."
-            # 3. 启动
             ./TorSOCKS5 run
+
+            # 2b. 自建中继：本机起一个中继，再让代理走它（快得多，不依赖 Tor）
+            ./TorSOCKS5 relay token                       # 生成令牌
+            ./TorSOCKS5 relay serve --allow-all           # 起中继（默认 127.0.0.1:9052）
+            ./TorSOCKS5 run --route self-relay --relay-url ws://127.0.0.1:9052/tsu --relay-token <令牌>
+
+            # 2c. Cloudflare Worker 中转：先按 deploy/cloudflare/README.md 部署，然后
+            ./TorSOCKS5 run --route cf-relay --relay-url wss://<你的 Worker 域名>/tsu --relay-token <令牌>
             ```
 
             然后把应用代理设为 `socks5h://127.0.0.1:9051`（用 `socks5h://`
             让域名也由代理解析，避免本地 DNS 泄漏）。
 
-            ### ⚠️ 关于速度：慢是正常现象
+            查看三种路由的当前状态与就绪情况：`./TorSOCKS5 routes`；
+            验证一条隧道是否真的通：`./TorSOCKS5 tunnel check --route self-relay`。
 
-            **meek 本身就很慢，这不是程序的缺陷。** 原因是它的协议设计：
-            每传输 64KB 就必须完成一次完整的 HTTP 请求/响应往返，吞吐上限
-            等于 `64KB ÷ RTT`。在高延迟线路上实测约 **25 KB/s**。
+            ### ⚠️ 用默认的 tor-meek 时：慢是正常现象
 
-            因此：
+            **meek 本身就很慢，这不是程序的缺陷。** 它的协议设计是每传输 64KB
+            就要完成一次完整的 HTTP 请求/响应往返，吞吐上限约等于 `64KB ÷ RTT`，
+            实测约 **25 KB/s**。因此：
 
-            * **首次启动需要 10～30 分钟**。tor 要下载约 7MB 的目录信息
-              （权威共识 + 9458 个中继微描述符），meek 上这个过程很慢。
-              进度会显示在 `50% ~ 99% (loading_descriptors)`，只要数字还在涨
-              就说明一切正常。第二次启动复用缓存会快很多。
-            * 想要更长的等待时间：`./TorSOCKS5 run --ready-timeout 1800`
-            * 想不等引导完成就开始监听：`./TorSOCKS5 run --ready-timeout 0 --keep-going`
-            * **需要速度请换传输**：obfs4 / snowflake / webtunnel 都比 meek 快得多，
-              本项目对这些网桥行是透传支持的。
-            * 引导期间 tor 日志里刷屏的 `no running bridges known` 也是正常的
-              背压现象，不是故障。
+            * **首次启动需要 10～30 分钟**（tor 要下载约 7MB 目录信息）。
+              进度会显示在 `50% ~ 99% (loading_descriptors)`，数字还在涨就说明正常，
+              第二次启动复用缓存会快很多。
+            * 想等更久：`./TorSOCKS5 run --ready-timeout 1800`；
+              不等引导完成就监听：`./TorSOCKS5 run --ready-timeout 0 --keep-going`。
+            * **需要速度就换路由**：`self-relay` 实测比 meek 快约 30 倍，
+              并发 20 路实测全部成功。
 
             ### macOS 首次运行
 
@@ -322,8 +345,9 @@ jobs:
             ### 需要帮助
 
             * 完整文档：<https://github.com/Mofan2020/TorSOCKS5#readme>
-            * 环境自检：`./TorSOCKS5 doctor`
-            * 离线自检：`./TorSOCKS5 selftest`
+            * 三种路由详解与实测数据：[`docs/routes.md`](https://github.com/Mofan2020/TorSOCKS5/blob/main/docs/routes.md)
+            * 隧道协议规范（TSU/1，四端实现共用）：[`docs/tunnel-protocol.md`](https://github.com/Mofan2020/TorSOCKS5/blob/main/docs/tunnel-protocol.md)
+            * 环境自检：`./TorSOCKS5 doctor`；离线自检：`./TorSOCKS5 selftest`
             * 常见问题与故障排查：见 README「故障排查」一节
           files: |
             release/*
