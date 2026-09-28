@@ -146,8 +146,16 @@ jobs:
           cp -f README.md LICENSE dist/
           cp -f run.sh run.bat dist/ 2>/dev/null || true
           chmod +x dist/run.sh 2>/dev/null || true
+          # 文档与中继部署物一起带上：用户拿到包就能照着 deploy/ 里的说明自己搭中继
+          mkdir -p dist/docs
+          cp -f docs/*.md dist/docs/ 2>/dev/null || true
+          mkdir -p dist/deploy
+          cp -Rf deploy/cloudflare dist/deploy/ 2>/dev/null || true
+          cp -Rf deploy/deno dist/deploy/ 2>/dev/null || true
+          rm -rf dist/deploy/*/.wrangler dist/deploy/*/node_modules 2>/dev/null || true
+          ls dist/docs dist/deploy 2>/dev/null || true
 
-      - name: 冒烟测试（版本 + 离线自检 + 插件入口）
+      - name: 冒烟测试（版本 + 离线自检 + 插件入口 + 三种路由）
         shell: bash
         run: |
           set -e
@@ -159,6 +167,13 @@ jobs:
           fi
           echo "--- --version ---"
           "$BIN" --version
+          echo "--- routes（三种路由方式都必须被冻结产物认识）---"
+          "$BIN" routes
+          echo "--- relay token（新子命令可用）---"
+          "$BIN" relay token | head -c 12; echo
+          echo "--- 端到端冒烟：relay serve + run --route self-relay + 经 SOCKS5 取数据 ---"
+          # 验证冻结产物不会漏掉懒加载的隧道路由子模块（PyInstaller 常见坑）
+          python scripts/e2e_smoke.py --binary "$BIN"
           echo "--- selftest（离线端到端：SOCKS5 + meek 隧道 + PT 握手）---"
           "$BIN" selftest
           echo "--- 传输插件入口（模拟 tor 调用）---"

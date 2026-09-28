@@ -34,6 +34,7 @@ from torsocks5.tunnel.probe import (  # noqa: E402
     run_probe,
 )
 from torsocks5.tunnel.relay import RelayServer  # noqa: E402
+from torsocks5.tunnel.stream import MAX_PENDING_BYTES  # noqa: E402
 from torsocks5.tunnel.wsclient import WebSocketError, WSClient  # noqa: E402
 
 RELAY_TOKEN = "unit-test-token"
@@ -191,6 +192,119 @@ class TunnelEndToEndTests(unittest.TestCase):
             self.assertEqual(stream.recv(16), b"")
         finally:
             stream.close()
+
+    def test_backpressure_stalls_both_directions(self):
+        """规范 3.4：积压超过 1 MiB 必须停止读对端，不能无界缓冲。
+
+        两个方向都测：
+        * 目标 → 客户端：客户端故意不读，目标推 32 MiB 必须被刹住（且随后读回来一字节不差）；
+        * 客户端 → 目标：目标故意不读，客户端 ``sendall`` 必须被刹住。
+        """
+        total = 32 * 1024 * 1024
+        drain_wait = 2.0
+
+        # ---------------------------------------------------- 目标 → 客户端
+        fast = socket.socket()
+        fast.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        fast.bind(("127.0.0.1", 0))
+        fast.listen(1)
+        fast_port = fast.getsockname()[1]
+        payload = os.urandom(total)
+        progress = {"sent": 0}
+
+        def push():
+            conn, _ = fast.accept()
+            try:
+                conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+                view = memoryview(payload)
+                while progress["sent"] < total:
+                    sent = conn.send(view[progress["sent"]:progress["sent"] + 262144])
+                    if not sent:
+                        break
+                    progress["sent"] += sent
+            except OSError:
+                pass
+            finally:
+                conn.close()
+                fast.close()
+
+        threading.Thread(target=push, daemon=True).start()
+        client = self.make_client(max_streams=4)
+        stream = client.connect("127.0.0.1", fast_port, timeout=10.0)
+        try:
+            time.sleep(drain_wait)
+            first = progress["sent"]
+            pending = stream.pending
+            time.sleep(drain_wait)
+            second = progress["sent"]
+            self.assertLess(pending, MAX_PENDING_BYTES + 1024 * 1024,
+                            "客户端积压超过了背压上限：%d 字节" % pending)
+            self.assertLess(second, total, "目标应该被刹住，却把 32 MiB 全推完了")
+            self.assertLess(second - first, 1024 * 1024,
+                            "阻塞期间目标又推进了 %d 字节，说明没有真正背压" % (second - first))
+            # 继续读：数据必须完整无损
+            got = bytearray()
+            deadline = time.time() + 60
+            while len(got) < total and time.time() < deadline:
+                chunk = stream.recv(262144)
+                if not chunk:
+                    break
+                got.extend(chunk)
+            self.assertEqual(len(got), total)
+            self.assertEqual(bytes(got), payload)
+        finally:
+            stream.close()
+            client.close()
+
+        # ---------------------------------------------------- 客户端 → 目标
+        slow = socket.socket()
+        slow.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        slow.bind(("127.0.0.1", 0))
+        slow.listen(1)
+        slow_port = slow.getsockname()[1]
+        received = {"total": 0, "conn": None}
+
+        def accept_and_stall():
+            conn, _ = slow.accept()
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+            received["conn"] = conn
+            while True:  # 收到就丢，绝不主动读——模拟「下游很慢」
+                time.sleep(0.2)
+                break
+
+        threading.Thread(target=accept_and_stall, daemon=True).start()
+        client2 = self.make_client(max_streams=4)
+        stream2 = client2.connect("127.0.0.1", slow_port, timeout=10.0)
+        sent = {"bytes": 0}
+
+        def push_from_client():
+            view = memoryview(payload[:8 * 1024 * 1024])
+            try:
+                while sent["bytes"] < len(view):
+                    chunk = view[sent["bytes"]:sent["bytes"] + 262144]
+                    stream2.sendall(chunk)
+                    sent["bytes"] += len(chunk)
+            except (OSError, WebSocketError):
+                # 被背压刹住后 WS 发送会超时，这是预期结果，不是错误
+                pass
+
+        try:
+            thread = threading.Thread(target=push_from_client, daemon=True)
+            thread.start()
+            time.sleep(drain_wait)
+            first = sent["bytes"]
+            time.sleep(drain_wait)
+            second = sent["bytes"]
+            self.assertLess(second - first, 1024 * 1024,
+                            "对端不读时客户端仍在推进 %d 字节，说明没有背压" % (second - first))
+            self.assertLess(second, 8 * 1024 * 1024, "8 MiB 不该全推完")
+        finally:
+            stream2.close()
+            client2.close()
+            conn = received["conn"]
+            if conn is not None:
+                conn.close()
+            slow.close()
 
     def test_connection_refused_maps_to_error(self):
         client = self.make_client()

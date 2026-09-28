@@ -861,7 +861,7 @@ __OwningControllerProcess <pid>     # 控制器退出时自动关闭 tor（POSIX
 | 5 MB 下载（不走代理，对照） | 742 KB/s（6.73 s） |
 | 并发 20 路（经隧道访问同一站点） | **20 成功 / 0 失败** |
 | 建流耗时（中继→目标 TCP） | github.com:443 约 1~2 ms；example.com:443 约 1.2 s（取决于对端） |
-| 单元测试 | 128 个用例全绿（其中隧道相关 48 个，全部离线） |
+| 单元测试 | 129 个用例全绿（其中隧道相关 49 个，全部离线） |
 
 结论：**本机中继的隧道开销可以忽略**（798 KB/s vs 742 KB/s，在同一测量的正常波动内），
 瓶颈在中继机器的出口带宽，而不是协议本身。相比 meek 的约 25 KB/s 快了约 30 倍。
@@ -1003,7 +1003,7 @@ git clone https://github.com/Mofan2020/TorSOCKS5.git
 cd TorSOCKS5
 pip install -e ".[dev]"
 
-# 单元测试（128 个用例，全部离线、不需要网络与 tor）
+# 单元测试（129 个用例，全部离线、不需要网络与 tor）
 python -m unittest discover -s tests -v
 
 # 离线端到端自检
@@ -1038,7 +1038,7 @@ pip install pyinstaller && pyinstaller torsocks5.spec
 | `tests/test_pt.py` | PT 协议：握手、多传输名、参数传递、缺失 url 的处理 |
 | `tests/test_core.py` | SOCKS5 服务端/客户端、ACL、认证、网桥解析、配置与 TOML 解析器 |
 | `tests/test_tunnel_protocol.py` | TSU/1 帧编解码、地址编码、错误码、目标策略、主机匹配、智能分流、RFC 6455 帧层 |
-| `tests/test_tunnel_e2e.py` | **真起中继做端到端转发**：HTTP 往返、1 MiB 大数据、并发换链路、半关闭、未定义 opcode 回 RESET、白名单/私有地址拒绝、SOCKS5 over tunnel |
+| `tests/test_tunnel_e2e.py` | **真起中继做端到端转发**：HTTP 往返、1 MiB 大数据、并发换链路、半关闭、双向背压（1 MiB 上限真刹得住且不丢数据）、未定义 opcode 回 RESET、白名单/私有地址拒绝、SOCKS5 over tunnel |
 | `deploy/cloudflare/test/*.test.mjs` | Worker 形态的中继：编解码、opcode 表、目标策略、错误码分类、PING/PONG（`node --test`，不需要 workerd），共 54 个用例 |
 | `deploy/deno/main_test.ts` | Deno 形态的中继：同一批断言 + 真实 `Deno.connect` 转发、空闲超时、保活失效（23 个用例） |
 | `scripts/interop_relay.py` | **跨语言互通**：Python 客户端 ↔ 真实运行的 Worker / Deno 中继，握手 + 鉴权 + 真转发一次 HTTP 请求 + 策略一致性 |

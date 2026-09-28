@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import socket
 import subprocess
@@ -95,6 +96,14 @@ def build_config(path: str, proxy_port: int, relay_port: int) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="CLI 级端到端冒烟")
+    parser.add_argument("--binary", default="",
+                        help="要测试的可执行文件/解释器入口（默认用当前解释器跑 torsocks5_cli.py）；"
+                             "打包后可以传 dist/TorSOCKS5 验证冻结产物")
+    args = parser.parse_args()
+    base_cmd = [args.binary] if args.binary else [sys.executable, CLI]
+    label = args.binary or ("%s %s" % (sys.executable, os.path.basename(CLI)))
+
     steps: list[tuple[str, bool, str]] = []
     processes: list[subprocess.Popen] = []
     workdir = tempfile.mkdtemp(prefix="torsocks5-e2e-")
@@ -105,10 +114,10 @@ def main() -> int:
     echo = start_http_echo()
     echo_port = echo.server_address[1]
 
-    def spawn(args: list[str], log_name: str) -> subprocess.Popen:
+    def spawn(args_list: list[str], log_name: str) -> subprocess.Popen:
         log_path = os.path.join(workdir, log_name)
         handle = open(log_path, "wb")
-        proc = subprocess.Popen([sys.executable, CLI, "--config", config_path] + args,
+        proc = subprocess.Popen(base_cmd + ["--config", config_path] + args_list,
                                 stdout=handle, stderr=subprocess.STDOUT)
         proc._torsocks5_log = log_path  # type: ignore[attr-defined]
         processes.append(proc)
@@ -159,17 +168,17 @@ def main() -> int:
 
         # ---------------------------------------------------------- 5. tunnel check 子命令
         check = subprocess.run(
-            [sys.executable, CLI, "tunnel", "check",
-             "--relay-url", "ws://127.0.0.1:%d/tsu" % relay_port,
-             "--relay-token", RELAY_TOKEN,
-             "--hosts", "127.0.0.1:%d" % echo_port, "--http"],
+            base_cmd + ["tunnel", "check",
+                        "--relay-url", "ws://127.0.0.1:%d/tsu" % relay_port,
+                        "--relay-token", RELAY_TOKEN,
+                        "--hosts", "127.0.0.1:%d" % echo_port, "--http"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=90)
         out = check.stdout.decode("utf-8", "replace")
         steps.append(("tunnel check 报告目标可用", check.returncode == 0 and "1/1" in out,
                       out.strip().splitlines()[-1] if out.strip() else "无输出"))
 
         # ---------------------------------------------------------- 6. routes 子命令
-        routes = subprocess.run([sys.executable, CLI, "routes"],
+        routes = subprocess.run(base_cmd + ["routes"],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
         out = routes.stdout.decode("utf-8", "replace")
         steps.append(("routes 列出三种路由",
@@ -190,6 +199,7 @@ def main() -> int:
         echo.shutdown()
 
     print("端到端冒烟（CLI 级）")
+    print("  被测入口：%s" % label)
     failed = 0
     for label, ok, detail in steps:
         print("  %s %s%s" % ("✓" if ok else "✗", label, "" if ok else " —— " + detail))
