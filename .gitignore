@@ -38,3 +38,9 @@ desktop.ini
 /dist/
 /build/
 *.spec.bak
+
+# 中继部署物（Cloudflare Worker / Deno）
+.wrangler/
+.dev.vars
+deploy/**/node_modules/
+deploy/**/.deno/

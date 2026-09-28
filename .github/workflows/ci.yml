@@ -38,6 +38,10 @@ jobs:
           assert deps == [], f"运行期不应有依赖，当前: {deps}"
           print("OK: dependencies = []")
           PY
+      - name: 文档 ↔ 代码一致性（路由/子命令/用例数/错误码/配置段/链接）
+        run: |
+          python scripts/check_docs.py
+          python scripts/check_docs.py --selftest
 
   test:
     name: 测试 ${{ matrix.os }} / Python ${{ matrix.python-version }}
@@ -54,6 +58,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: 运行单元测试
         run: python -m unittest discover -s tests -v
+      - name: 端到端冒烟（CLI 级：relay serve + run --route self-relay + SOCKS5 取数据）
+        run: python scripts/e2e_smoke.py
       - name: 离线自检（SOCKS5 + meek 端到端）
         run: python torsocks5_cli.py selftest
       - name: 冒烟测试 --help / --version
@@ -135,6 +141,42 @@ jobs:
       - name: 清理
         if: always()
         run: pkill -f mock_server || true; pkill -f "tor -f" || true
+
+  relays:
+    name: 中继实现（Worker / Deno）与跨语言互通
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Cloudflare Worker 单元测试（node --test，不需要 workerd）
+        working-directory: deploy/cloudflare
+        run: node --test
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: "v2.x"
+      - name: Deno 中继单元测试
+        working-directory: deploy/deno
+        run: deno test --allow-net --allow-env --allow-read
+      - name: 跨语言互通：Python 客户端 ↔ Deno 中继（真转发一次数据）
+        run: |
+          python scripts/interop_relay.py \
+            --start "cd deploy/deno && deno run --allow-net --allow-env main.ts" \
+            --port 8791 --token devtoken --timeout 90
+      - name: 跨语言互通：Python 客户端 ↔ Cloudflare Worker（本地 workerd）
+        # 这一步要先用 npx 下载 wrangler（约一分钟）并起 workerd，
+        # 受网络影响较大，所以标记为「尽力而为」；本地已验证通过：
+        #   python scripts/interop_relay.py --start "cd deploy/cloudflare && npx wrangler dev --port 8790 --var TSU_TOKEN:devtoken" --port 8790 --token devtoken
+        continue-on-error: true
+        run: |
+          python scripts/interop_relay.py \
+            --start "cd deploy/cloudflare && npx --yes wrangler@4 dev --port 8790 --var TSU_TOKEN:devtoken" \
+            --port 8790 --token devtoken --timeout 240
 
   security:
     name: 依赖与许可检查

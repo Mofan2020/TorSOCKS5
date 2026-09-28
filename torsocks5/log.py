@@ -117,3 +117,36 @@ def banner(logger: Logger, text: str) -> None:
     else:
         logger.plain(text)
     logger.plain("")
+
+
+PROGRESS_WIDTH = 28
+
+
+def clean_tor_line(line: str) -> str:
+    """去掉 tor 日志里的时间与级别前缀，只留正文。"""
+    parts = line.split("] ", 1)
+    return parts[1] if len(parts) == 2 else line
+
+
+def progress_printer(logger: Logger):
+    """把 tor 的引导进度变成日志输出。
+
+    终端里原地刷新一条进度条；重定向到文件时改成一行一条，避免刷出几十万行。
+    """
+    tty = sys.stderr.isatty()
+
+    def printer(percent: int, tag: str, summary: str) -> None:
+        if percent >= 100:
+            logger.ok("Tor 引导完成：%s" % (summary or "Done"))
+            return
+        if not tty:
+            logger.info("引导 %d%% %s %s" % (percent, tag, summary))
+            return
+        filled = int(PROGRESS_WIDTH * percent / 100)
+        bar = "#" * filled + "-" * (PROGRESS_WIDTH - filled)
+        with logger.lock:
+            sys.stderr.write("\r  [%s] %3d%% %-22s %s\033[K"
+                             % (bar, percent, tag, summary[:40]))
+            sys.stderr.flush()
+
+    return printer

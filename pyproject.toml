@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "torsocks5"
-version = "1.0.0"
-description = "通过 meek 网桥连接 Tor 网络的 SOCKS5 代理（纯 Python 实现 meek 传输）"
+version = "1.1.0"
+description = "跨平台 SOCKS5 本地代理：Tor+meek 网桥 / Cloudflare Worker 中转 / 自建隧道路由可选（纯 Python）"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }

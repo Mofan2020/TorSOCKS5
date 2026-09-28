@@ -11,6 +11,8 @@ import re
 import sys
 from typing import Any, Dict, List, Tuple
 
+from .defaults import DEFAULT_ALLOW_PORTS, LEARNING_ALLOW_HOSTS
+
 try:  # Python 3.11+
     import tomllib as _tomllib
 except ImportError:  # pragma: no cover - 老版本 Python
@@ -271,6 +273,7 @@ def _dig(data: Dict[str, Any], path: str, default: Any) -> Any:
 DEFAULTS: List[Tuple[str, Any]] = [
     ("proxy.listen", "127.0.0.1"),
     ("proxy.port", 9051),
+    ("proxy.route", "tor-meek"),
     ("proxy.username", ""),
     ("proxy.password", ""),
     ("proxy.allow_from", ["127.0.0.1", "::1"]),
@@ -279,6 +282,40 @@ DEFAULTS: List[Tuple[str, Any]] = [
     ("proxy.connect_timeout", 30),
     ("proxy.udp_associate", True),
     ("proxy.verbose", False),
+    # 智能分流（仅 cf-relay / self-relay 生效；auto 由路由类型决定，见 docs/routes.md）
+    ("split.mode", "auto"),
+    ("split.builtin_proxy", True),
+    ("split.builtin_direct", True),
+    ("split.proxy_hosts", []),
+    ("split.direct_hosts", []),
+    # 路由 2：Cloudflare Worker 中转
+    ("cf_relay.url", ""),
+    ("cf_relay.token", ""),
+    ("cf_relay.links", 4),
+    ("cf_relay.max_streams", 6),
+    ("cf_relay.front", ""),
+    ("cf_relay.insecure", False),
+    ("cf_relay.token_in_header", False),
+    # 路由 3：自建 / 多平台中继
+    ("self_relay.url", ""),
+    ("self_relay.token", ""),
+    ("self_relay.links", 4),
+    ("self_relay.max_streams", 64),
+    ("self_relay.front", ""),
+    ("self_relay.insecure", False),
+    ("self_relay.token_in_header", False),
+    # ``torsocks5 relay serve`` 自建中继服务端
+    ("relay.listen", "127.0.0.1"),
+    ("relay.port", 9052),
+    ("relay.token", ""),
+    ("relay.allow_hosts", list(LEARNING_ALLOW_HOSTS)),
+    ("relay.allow_ports", list(DEFAULT_ALLOW_PORTS)),
+    ("relay.allow_all", False),
+    ("relay.allow_private", False),
+    ("relay.max_streams", 64),
+    ("relay.path", "/tsu"),
+    ("relay.tls_cert", ""),
+    ("relay.tls_key", ""),
     ("tor.binary", ""),
     ("tor.socks_port", 0),
     ("tor.control_port", 0),
@@ -296,6 +333,13 @@ DEFAULTS: List[Tuple[str, Any]] = [
     ("bridges.file", ""),
     ("bridges.builtin", True),
 ]
+
+
+def as_bool(value: Any) -> bool:
+    """把配置/命令行里的真假值统一成 ``bool``。"""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
 class Config:

@@ -9,6 +9,12 @@
 listen = "127.0.0.1"
 port = 9051
 
+# 流量路由方式（也可以用 `torsocks5 run --route xxx` 临时覆盖）：
+#   "tor-meek"   Tor 网络 + meek 网桥（默认）：最抗封锁、最慢
+#   "cf-relay"   Cloudflare Worker 中转：免费额度，受平台限制与条款约束
+#   "self-relay" 自建 / 多平台中继：不依赖 Tor，速度接近直连
+route = "tor-meek"
+
 # 留空表示免认证（仅本机使用时推荐）。填上用户名/密码后会启用 RFC 1929 认证，
 # 同时 tor 侧会按 IsolateSOCKSAuth 做流量隔离（不同用户走不同线路）。
 username = ""
@@ -23,10 +29,53 @@ idle_timeout = 300
 connect_timeout = 30
 
 # 是否支持 UDP ASSOCIATE（DNS over UDP、部分游戏/语音）
+# 注意：隧道路由（cf-relay / self-relay）只承载 TCP，这里开了也无效。
 udp_associate = true
 
 # 打印每条连接日志
 verbose = false
+
+[split]
+# 智能分流：只对 cf-relay / self-relay 生效（tor-meek 本身就是完整代理，不需要分流）。
+#   "auto"  = 按路由自动决定（cf-relay → smart；self-relay → all；tor-meek → off）
+#   "smart" = 命中「需要辅助访问」名单才走隧道，其余直连
+#   "all"   = 除私有地址外全部走隧道
+#   "off"   = 不分流，全部走隧道
+mode = "auto"
+
+# 内置名单开关（内置 59 条代理名单 + 一批国内直连名单，见 docs/routes.md）
+builtin_proxy = true
+builtin_direct = true
+
+# 自定义规则：后缀匹配，`github.com` 同时命中 api.github.com
+# proxy_hosts = ["example.com"]
+# direct_hosts = ["intranet.example"]
+
+[cf_relay]
+# 路由方式 2：先部署 deploy/cloudflare/ 里的 Worker，再把地址填到这里。
+url = ""
+token = ""
+# links = 4         # 并发 WS 链路数
+# max_streams = 6   # Cloudflare 免费版硬限制：单个请求最多 6 条并发出站连接
+
+[self_relay]
+# 路由方式 3：torsocks5 relay serve（本机/VPS），或 deploy/deno/ 部署到 Deno Deploy。
+url = ""
+token = ""
+# links = 4
+# max_streams = 64
+
+[relay]
+# 自建中继服务端（`torsocks5 relay serve` 读取这一段）
+listen = "127.0.0.1"
+port = 9052
+# 令牌：不设置时只能监听回环地址，否则等于开放代理
+token = ""
+# 目标白名单：allow_all = false 时只放行 allow_hosts 命中的目标
+allow_all = false
+# allow_hosts = ["github.com", "pypi.org"]
+# allow_ports = [443, 80, 22, 9418]
+max_streams = 64
 
 [tor]
 # tor 可执行文件路径，留空自动探测（PATH、Tor Browser、Homebrew、常见安装位置）

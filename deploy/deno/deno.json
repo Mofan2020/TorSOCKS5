@@ -1,0 +1,17 @@
+{
+  "fmt": {
+    "lineWidth": 100,
+    "semiColons": true,
+    "exclude": ["README.md"]
+  },
+  "lint": {
+    "rules": {
+      "exclude": ["no-explicit-any"]
+    }
+  },
+  "tasks": {
+    "check": "deno check main.ts main_test.ts",
+    "test": "deno test --allow-net --allow-env --allow-read",
+    "serve": "deno run --allow-net --allow-env main.ts"
+  }
+}

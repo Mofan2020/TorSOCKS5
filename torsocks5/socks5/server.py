@@ -213,22 +213,38 @@ class SocksConnection:
 
     def _handle_connect(self, host: str, port: int) -> None:
         target = "%s:%d" % (host, port)
+        upstream_addr = self.server.upstream
+        if self.server.connector is None and upstream_addr is None:
+            # 没有 connector 也没有上游：配置错误，明确报出来而不是抛 TypeError
+            self._reply(REP_GENERAL_FAILURE)
+            self._log("没有可用的出口：既没有 connector 也没有上游 SOCKS5 地址")
+            return
         try:
-            upstream = socks_client.socks5_connect(
-                self.server.upstream,
-                host,
-                port,
-                username=self.server.upstream_username,
-                password=self.server.upstream_password,
-                timeout=self.server.connect_timeout,
-            )
+            if self.server.connector is not None:
+                # 隧道路由：直接拿到一个 socket 风格对象（真实 socket 或 TunnelSocket）
+                upstream = self.server.connector(host, port)
+            else:
+                assert upstream_addr is not None
+                upstream = socks_client.socks5_connect(
+                    upstream_addr,
+                    host,
+                    port,
+                    username=self.server.upstream_username,
+                    password=self.server.upstream_password,
+                    timeout=self.server.connect_timeout,
+                )
         except SocksError as exc:
             self._reply(REP_HOST_UNREACHABLE)
             self._log("连接 %s 失败：%s" % (target, exc))
             return
         except OSError as exc:
-            self._reply(REP_CONNECTION_REFUSED)
+            # 隧道路由的异常自带 rep_code（如「目标不在白名单」→ REP_NOT_ALLOWED）
+            self._reply(int(getattr(exc, "rep_code", REP_CONNECTION_REFUSED)))
             self._log("连接 %s 失败：%s" % (target, exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - 兜底：不让一个坏 connector 拖垮服务
+            self._reply(REP_GENERAL_FAILURE)
+            self._log("连接 %s 出现意外错误：%s" % (target, exc))
             return
         self._reply(REP_SUCCESS, "0.0.0.0", 0)
         self._log("CONNECT %s%s" % (target, "（认证：%s）" % self.username if self.username else ""))
@@ -299,20 +315,29 @@ class SocksConnection:
 
     # ------------------------------------------------------------------ UDP
     def _handle_udp(self, host: str, port: int) -> None:
+        if self.server.connector is not None:
+            self._reply(REP_COMMAND_NOT_SUPPORTED)
+            self._log("UDP ASSOCIATE 不可用：隧道路由只承载 TCP")
+            return
         if not self.server.udp_associate:
             self._reply(REP_COMMAND_NOT_SUPPORTED)
             self._log("UDP ASSOCIATE 已在配置中关闭")
             return
+        upstream_addr = self.server.upstream
+        if upstream_addr is None:
+            self._reply(REP_GENERAL_FAILURE)
+            self._log("UDP ASSOCIATE 需要上游 SOCKS5 地址，但当前没有配置")
+            return
         try:
             control, relay = socks_client.socks5_udp_associate(
-                self.server.upstream, timeout=self.server.connect_timeout
+                upstream_addr, timeout=self.server.connect_timeout
             )
         except (SocksError, OSError) as exc:
             self._reply(REP_GENERAL_FAILURE)
             self._log("向 tor 申请 UDP ASSOCIATE 失败：%s" % exc)
             return
         if relay[0] in ("0.0.0.0", ""):
-            relay = (self.server.upstream[0], relay[1])
+            relay = (upstream_addr[0], relay[1])
         self._reply(REP_SUCCESS, relay[0], relay[1])
         self._log("UDP ASSOCIATE -> %s:%d" % relay)
         try:
@@ -481,7 +506,7 @@ class SocksServer:
 
     def __init__(
         self,
-        upstream: Tuple[str, int],
+        upstream: Optional[Tuple[str, int]] = None,
         host: str = "127.0.0.1",
         port: int = 9051,
         username: Optional[str] = None,
@@ -495,8 +520,10 @@ class SocksServer:
         upstream_username: Optional[str] = None,
         upstream_password: str = "",
         on_log: Optional[Callable[[str], None]] = None,
+        connector: Optional[Callable[[str, int], socket.socket]] = None,
     ) -> None:
         self.upstream = upstream
+        self.connector = connector
         self.host = host
         self.port = port
         self.username = username or None

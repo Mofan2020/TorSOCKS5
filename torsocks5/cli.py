@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import platform
+import secrets
 import shutil
 import socket
 import sys
@@ -25,15 +26,16 @@ import urllib.error
 import urllib.request
 from typing import List, Optional, Tuple
 
-from . import __version__
+from . import __version__, hostrules
 from . import bridges as bridges_mod
 from . import config as config_mod
 from . import log as log_mod
+from . import routes as routes_mod
 from .socks5.server import SocksServer
 from .tor import find as tor_find
-from .tor.manager import TorProcess, TorSupervisor, port_available
+from .tor.manager import TorProcess, port_available
 
-PROGRESS_WIDTH = 28
+PROGRESS_WIDTH = log_mod.PROGRESS_WIDTH
 
 
 def _force_utf8_output() -> None:
@@ -109,74 +111,48 @@ def cmd_run(args: argparse.Namespace, logger: log_mod.Logger) -> int:
     password = config.get("proxy.password") or ""
     upstream_override = _parse_addr(args.upstream) if args.upstream else None
 
-    store = load_bridges(config, args.bridge)
-    use_bridges = not (args.no_bridge or _bool(config.get("tor.direct")))
-    bridge_lines = store.torrc_lines() if use_bridges else []
-    if use_bridges and not bridge_lines:
-        logger.error("没有可用的网桥。请先添加：torsocks5 bridges add \"Bridge meek 0.0.2.0:3 url=... front=...\"")
-        logger.error("或从 https://bridges.torproject.org 获取 meek 网桥行。")
-        return 2
-
     if not port_available(port, listen if ":" not in listen else listen):
         logger.error("端口 %d 已被占用，请用 --port 指定其它端口" % port)
         return 2
 
-    socks_server: Optional[SocksServer] = None
-    supervisor: Optional[TorSupervisor] = None
-    tor: Optional[TorProcess] = None
+    # ---------------------------------------------------------------- 选路由
+    route_name = (args.route or str(config.get("proxy.route") or routes_mod.DEFAULT_ROUTE))
+    if upstream_override is not None:
+        route_name = "upstream"  # 兼容旧行为：--upstream 就是「复用已有 SOCKS5」
+    options = routes_mod.RouteOptions(
+        bridge_lines=list(args.bridge or []),
+        tor_binary=args.tor or "",
+        direct=bool(args.no_bridge),
+        ready_timeout=args.ready_timeout,
+        keep_going=bool(args.keep_going),
+        upstream=upstream_override,
+        verbose=bool(args.verbose),
+        relay_url=args.relay_url or "",
+        relay_token=args.relay_token or "",
+    )
+    try:
+        route = routes_mod.create_route(route_name, config, logger, options)
+    except routes_mod.RouteError as exc:
+        logger.error(str(exc))
+        return exc.exit_code
 
-    if upstream_override is None:
-        def factory() -> TorProcess:
-            cfg = config_mod.Config(dict(config.data), config.path)
-            if args.tor:
-                cfg.data.setdefault("tor", {})["binary"] = args.tor
-            if args.no_bridge:
-                cfg.data.setdefault("tor", {})["direct"] = True
-            return TorProcess(
-                cfg,
-                bridge_lines,
-                on_log=lambda line: logger.debug(_clean_tor_line(line)),
-                on_progress=make_progress_printer(logger),
-                on_state=lambda state: logger.debug("tor 状态: %s" % state),
-            )
+    try:
+        route.start()
+    except routes_mod.RouteError as exc:
+        logger.error(str(exc))
+        route.stop()
+        return exc.exit_code
 
-        tor = factory()
-        supervisor = TorSupervisor(factory, restart=_bool(config.get("tor.restart")),
-                                   on_log=logger.warn)
-        log_mod.banner(logger, "TorSOCKS5 %s —— 正在通过 meek 网桥连接 Tor" % __version__)
-        try:
-            tor = supervisor.start()
-        except Exception as exc:  # noqa: BLE001
-            logger.error("启动 tor 失败: %s" % exc)
-            return 3
-        logger.info("tor: %s" % tor.summary_text())
-        logger.info("torrc: %s" % tor.torrc_path)
-        if bridge_lines:
-            logger.info("网桥: %s" % ("; ".join(bridge_lines[:3]) + ("…" if len(bridge_lines) > 3 else "")))
-        timeout = args.ready_timeout if args.ready_timeout is not None else 300
-        if timeout > 0:
-            logger.info("等待 Tor 引导完成（最多 %d 秒）…" % timeout)
-            logger.info("提示：meek 协议每 64KB 需要一次完整 HTTP 往返，**慢是正常现象**。")
-            logger.info("      首次启动要下载约 7MB 目录信息，可能需要 10~30 分钟；")
-            logger.info("      进度停在 50%%~99%% 且仍在缓慢增长即属正常。")
-            logger.info("      想更久可加 --ready-timeout 1800；不想等待用 --ready-timeout 0 --keep-going")
-            if not tor.wait_for_ready(timeout):
-                percent, summary = tor.bootstrap_status()
-                logger.error("Tor 引导未完成（%d%% %s）。" % (percent, summary))
-                logger.error("常见原因：网桥失效 / CDN 前置域名被封 / 需要换一条网桥。")
-                logger.error("查看详细日志: %s" % tor.tor_log_path)
-                if args.keep_going:
-                    logger.warn("按 --keep-going 继续以提供代理（多数请求会失败）")
-                else:
-                    supervisor.stop()
-                    return 4
-        upstream = tor.socks_address
-    else:
-        upstream = upstream_override
-        logger.info("使用已有的 tor SOCKS5 端口: %s:%d" % upstream)
+    connector = route.connector()
+    upstream = route.upstream_socks()
+    if connector is None and upstream is None:
+        logger.error("路由 %s 既没有提供上游 SOCKS5 也没有提供 connector" % route.name)
+        route.stop()
+        return 3
 
     socks_server = SocksServer(
         upstream=upstream,
+        connector=connector,
         host=listen,
         port=port,
         username=username,
@@ -185,14 +161,14 @@ def cmd_run(args: argparse.Namespace, logger: log_mod.Logger) -> int:
         max_connections=int(config.get("proxy.max_connections")),
         idle_timeout=float(config.get("proxy.idle_timeout")),
         connect_timeout=float(config.get("proxy.connect_timeout")),
-        udp_associate=_bool(config.get("proxy.udp_associate")),
+        udp_associate=_bool(config.get("proxy.udp_associate")) and route.supports_udp,
         verbose=_bool(config.get("proxy.verbose")) or args.verbose,
         on_log=logger.info if (args.verbose or _bool(config.get("proxy.verbose"))) else None,
     )
     bound = socks_server.bind()
     threading.Thread(target=socks_server.serve_forever, name="socks5", daemon=True).start()
 
-    show_ready_banner(logger, bound, username, socks_server)
+    show_ready_banner(logger, bound, username, socks_server, route)
 
     stop_event = threading.Event()
 
@@ -214,42 +190,37 @@ def cmd_run(args: argparse.Namespace, logger: log_mod.Logger) -> int:
     finally:
         logger.info("正在关闭…")
         socks_server.shutdown()
-        if supervisor is not None:
-            supervisor.stop()
+        route.stop()
     logger.ok("已退出。")
     return 0
 
 
 def _clean_tor_line(line: str) -> str:
-    """去掉 tor 日志里的时间与级别前缀。"""
-    parts = line.split("] ", 1)
-    return parts[1] if len(parts) == 2 else line
+    """（保留的别名）去掉 tor 日志里的时间与级别前缀。"""
+    return log_mod.clean_tor_line(line)
 
 
 def make_progress_printer(logger: log_mod.Logger):
-    tty = sys.stderr.isatty()
-
-    def printer(percent: int, tag: str, summary: str) -> None:
-        if percent >= 100:
-            logger.ok("Tor 引导完成：%s" % (summary or "Done"))
-            return
-        if not tty:
-            logger.info("引导 %d%% %s %s" % (percent, tag, summary))
-            return
-        filled = int(PROGRESS_WIDTH * percent / 100)
-        bar = "#" * filled + "-" * (PROGRESS_WIDTH - filled)
-        sys.stderr.write("\r  [%s] %3d%% %-22s %s\033[K" % (bar, percent, tag, summary[:40]))
-        sys.stderr.flush()
-
-    return printer
+    """（保留的别名）tor 引导进度 → 日志。实现在 ``torsocks5.log``。"""
+    return log_mod.progress_printer(logger)
 
 
 def show_ready_banner(logger: log_mod.Logger, address: Tuple[str, int],
-                      username: Optional[str], server: SocksServer) -> None:
+                      username: Optional[str], server: SocksServer, route=None) -> None:
     host, port = address
     display = "[%s]:%d" % (host, port) if ":" in host else "%s:%d" % (host, port)
     log_mod.banner(logger, "代理已就绪")
     logger.ok("SOCKS5 地址: %s" % display)
+    if route is not None:
+        logger.info("路由方式: %s（%s）" % (route.name, route.title))
+        note = route.target_note()
+        if note:
+            logger.info(note)
+        status = route.status()
+        if status:
+            logger.info("路由状态: %s" % status)
+    if server.connector is not None:
+        logger.info("UDP ASSOCIATE: 不支持（隧道路由只承载 TCP）")
     if username:
         logger.info("认证: %s / ******" % username)
     logger.info("示例: curl -x socks5h://%s%s https://ifconfig.me" % (
@@ -688,14 +659,223 @@ def cmd_install_service(args: argparse.Namespace, logger: log_mod.Logger) -> int
     return install_service(args, logger)
 
 
+# --------------------------------------------------------------------- routes
+def cmd_routes(args: argparse.Namespace, logger: log_mod.Logger) -> int:
+    """列出三种流量路由方式，以及当前环境里各自缺什么。"""
+    config = config_mod.Config.load(args.config)
+    log_mod.banner(logger, "TorSOCKS5 %s —— 可选的流量路由方式" % __version__)
+    current = str(config.get("proxy.route") or routes_mod.DEFAULT_ROUTE)
+    for name, title, summary in routes_mod.describe_table():
+        mark = "*" if name == current else " "
+        logger.plain("%s %-11s %s" % (mark, name, title))
+        logger.plain("  %s %s" % (" " * 11, summary))
+    logger.plain("")
+    logger.info("当前配置：route = %s（命令行可用 --route 覆盖）" % current)
+
+    logger.plain("")
+    logger.plain("就绪检查：")
+    binary = tor_find.find_tor(str(config.get("tor.binary") or ""))
+    if binary:
+        store = bridges_mod.BridgeStore(config.bridges_path)
+        try:
+            store.load(include_builtin=True)
+            bridge_count = len(store.active())
+        except (bridges_mod.BridgeError, OSError):
+            bridge_count = 0
+        logger.plain("  tor-meek   : tor 已就绪（%s），启用中的网桥 %d 条" % (binary, bridge_count))
+    else:
+        logger.plain("  tor-meek   : 未找到 tor —— torsocks5 fetch-tor 或系统安装 tor")
+    cf_url = str(config.get("cf_relay.url") or "")
+    logger.plain("  cf-relay   : %s" % (("已配置 %s" % cf_url) if cf_url
+                                       else "未配置 —— 先部署 deploy/cloudflare/，再把地址写进 [cf_relay]"))
+    relay_url = str(config.get("self_relay.url") or "")
+    logger.plain("  self-relay : %s" % (("已配置 %s" % relay_url) if relay_url
+                                        else "未配置 —— 本机跑 torsocks5 relay serve 即可，见 docs/routes.md"))
+    logger.plain("")
+    logger.info("细节、实测速度与限制: docs/routes.md")
+    return 0
+
+
+# --------------------------------------------------------------------- relay
+def cmd_relay(args: argparse.Namespace, logger: log_mod.Logger) -> int:
+    """自建中继（路由方式 3 的服务端）。"""
+    from .tunnel import RelayServer
+
+    action = getattr(args, "action", "serve") or "serve"
+    if action == "token":
+        token = secrets.token_urlsafe(24)
+        logger.plain(token)
+        return 0
+    if action != "serve":
+        logger.error("未知的子命令: %s（可选 serve / token）" % action)
+        return 2
+
+    config = config_mod.Config.load(args.config)
+    listen = args.listen or str(config.get("relay.listen"))
+    port = int(args.port or config.get("relay.port"))
+    token = args.token or str(config.get("relay.token") or "")
+    allow_all = bool(args.allow_all) or config_mod.as_bool(config.get("relay.allow_all"))
+    allow_hosts = list(config.get("relay.allow_hosts") or [])
+    for extra in args.allow_host or []:
+        allow_hosts.extend(hostrules.split_list(extra))
+    allow_ports = [int(item) for item in (args.allow_port or config.get("relay.allow_ports") or [])]
+    if args.max_streams:
+        max_streams = int(args.max_streams)
+    else:
+        max_streams = int(config.get("relay.max_streams"))
+    server = RelayServer(
+        listen,
+        port,
+        token=token,
+        allow_hosts=allow_hosts,
+        allow_ports=allow_ports,
+        allow_all=allow_all,
+        allow_private=bool(args.allow_private),
+        max_streams=max_streams,
+        path=str(config.get("relay.path") or "/tsu"),
+        idle_timeout=float(config.get("proxy.idle_timeout")),
+        connect_timeout=float(config.get("proxy.connect_timeout")),
+        tls_cert=args.tls_cert or "",
+        tls_key=args.tls_key or "",
+        on_log=logger.info,
+        log_targets=bool(args.verbose),
+    )
+    bound = server.bind()
+    host, real_port = bound[0], server.port
+    display = "[%s]:%d" % (host, real_port) if ":" in str(host) else "%s:%d" % (host, real_port)
+    log_mod.banner(logger, "TorSOCKS5 %s —— 自建中继已启动" % __version__)
+    logger.ok("中继地址: ws://%s%s" % (display, server.path))
+    logger.info("目标范围: %s" % ("任意地址（白名单已关闭）" if allow_all
+                                  else "%d 条规则命中才放行" % len(allow_hosts)))
+    logger.info("端口范围: %s" % (",".join(str(item) for item in allow_ports) if allow_ports else "任意"))
+    logger.info("单连接并发上限: %d 条流" % max_streams)
+    if args.allow_private:
+        logger.warn("已开启 --allow-private：中继将允许连接私有/回环地址（仅供本机测试）")
+    if not token:
+        loopback = str(host).startswith("127.") or host in ("::1", "localhost")
+        if loopback:
+            logger.info("未设置令牌：只监听回环地址，本机自用没问题")
+        else:
+            logger.warn("⚠️ 监听 %s 且未设置令牌：任何能连到这个端口的人都能拿它当代理！" % display)
+            logger.warn("   请加上 --token，或把 relay.token 写进配置。")
+    logger.plain("")
+    logger.plain("客户端配置：")
+    logger.plain("  [self_relay]")
+    logger.plain('  url = "ws://%s%s"' % (display, server.path))
+    if token:
+        logger.plain('  token = "%s"' % token)
+    logger.plain("")
+    logger.info("健康检查: curl http://%s/healthz" % display)
+    logger.info("停止服务: Ctrl+C")
+
+    stop_event = threading.Event()
+
+    def shutdown(_signum=None, _frame=None) -> None:
+        stop_event.set()
+
+    import signal as signal_mod
+
+    for sig in (signal_mod.SIGINT, signal_mod.SIGTERM):
+        try:
+            signal_mod.signal(sig, shutdown)
+        except (ValueError, OSError):
+            pass
+    thread = threading.Thread(target=server.serve_forever, name="tsu-relay", daemon=True)
+    thread.start()
+    try:
+        while not stop_event.is_set() and thread.is_alive():
+            stop_event.wait(0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        logger.info("正在关闭…")
+        server.stop()
+    logger.ok("中继已停止。累计：%s" % server.status_line())
+    return 0
+
+
+# --------------------------------------------------------------------- tunnel
+def cmd_tunnel(args: argparse.Namespace, logger: log_mod.Logger) -> int:
+    """隧道连通性检查：真的连上中继、真的转发一次数据。"""
+    from .tunnel.probe import DEFAULT_PROBE_TARGETS, format_report, run_probe
+
+    config = config_mod.Config.load(args.config)
+    action = args.action
+    url = args.relay_url or ""
+    token = args.relay_token or ""
+    if not url:
+        name = args.route or str(config.get("proxy.route") or "")
+        section = {"cf-relay": "cf_relay", "self-relay": "self_relay"}.get(name, "")
+        if section:
+            url = str(config.get("%s.url" % section) or "")
+            token = token or str(config.get("%s.token" % section) or "")
+        else:
+            for candidate in ("cf_relay", "self_relay"):
+                if config.get("%s.url" % candidate):
+                    url = str(config.get("%s.url" % candidate))
+                    token = token or str(config.get("%s.token" % candidate) or "")
+                    break
+    if not url:
+        logger.error("没有可测的中继地址。用 --relay-url wss://... 指定，"
+                     "或先配置 [cf_relay] url / [self_relay] url")
+        return 2
+
+    quick = [("github.com", 443), ("pypi.org", 443), ("huggingface.co", 443),
+             ("registry-1.docker.io", 443)]
+    targets = quick if action == "probe" else list(DEFAULT_PROBE_TARGETS)
+    if args.hosts:
+        targets = []
+        for piece in hostrules.split_list(args.hosts):
+            host, _, raw_port = piece.rpartition(":")
+            if host and raw_port.isdigit():
+                targets.append((host, int(raw_port)))
+            else:
+                targets.append((piece, 443))
+    log_mod.banner(logger, "TorSOCKS5 %s —— 中继探测：%s" % (__version__, url))
+
+    def progress(item) -> None:
+        if item.get("ok"):
+            logger.plain("  ✓ %s:%s %sms" % (item["host"], item["port"], item.get("connect_ms")))
+        else:
+            logger.plain("  ✗ %s:%s %s：%s" % (item["host"], item["port"],
+                                             item.get("stage", "?"), item.get("error")))
+
+    report = run_probe(
+        url,
+        token,
+        targets=targets,
+        timeout=float(args.timeout),
+        http_probe=bool(args.http),
+        front=args.front or "",
+        insecure=bool(args.insecure),
+        on_log=logger.debug,
+        on_progress=progress,
+    )
+    logger.plain("")
+    for line in format_report(report).splitlines():
+        if line.startswith("  "):
+            continue  # 逐条已经打过了
+        logger.plain(line)
+    if report.get("ok"):
+        logger.ok("中继可用，可以 torsocks5 run --route %s" % (
+            "cf-relay" if "workers.dev" in url else "self-relay"))
+        return 0
+    logger.error("中继不可用或目标不可达，见上面的逐条结果")
+    return 1
+
+
 # --------------------------------------------------------------------- 入口
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="torsocks5",
-        description="通过 meek 网桥连接 Tor 网络的 SOCKS5 代理",
+        description="跨平台 SOCKS5 本地代理：可选 Tor+meek 网桥 / Cloudflare Worker 中转 / 自建隧道",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="示例:\n"
-        "  torsocks5 run --port 9051\n"
+        "  torsocks5 run --route tor-meek --port 9051\n"
+        "  torsocks5 routes                          # 看三种路由方式与就绪情况\n"
+        "  torsocks5 relay serve --port 9052         # 自建中继（路由 3 的服务端）\n"
+        "  torsocks5 run --route self-relay --relay-url ws://127.0.0.1:9052/tsu\n"
+        "  torsocks5 tunnel check --route self-relay # 真连一次，看哪些站点可用\n"
         "  torsocks5 bridges add \"Bridge meek 0.0.2.0:3 url=https://... front=...\"\n"
         "  torsocks5 doctor\n",
     )
@@ -710,8 +890,12 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="启动代理服务")
     run.add_argument("--listen", default="", help="监听地址，默认 127.0.0.1")
     run.add_argument("--port", type=int, default=0, help="监听端口，默认 9051")
+    run.add_argument("--route", default="", choices=list(routes_mod.route_names()),
+                     help="流量路由方式，默认 tor-meek（也可写进配置 [proxy] route）")
+    run.add_argument("--relay-url", default="", help="覆盖中继地址（cf-relay / self-relay）")
+    run.add_argument("--relay-token", default="", help="覆盖中继令牌")
     run.add_argument("--tor", default="", help="指定 tor 可执行文件")
-    run.add_argument("--upstream", default="", help="复用已有的 tor SOCKS5 端口，如 127.0.0.1:9050")
+    run.add_argument("--upstream", default="", help="复用已有的 SOCKS5 端口，如 127.0.0.1:9050")
     run.add_argument("--no-bridge", action="store_true", help="不使用网桥，直接连接 Tor")
     run.add_argument("--bridge", action="append", default=[], help="临时追加一条网桥行（可重复）")
     run.add_argument("--ready-timeout", type=int, default=300,
@@ -719,9 +903,41 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--keep-going", action="store_true", help="引导失败也继续提供服务")
     run.set_defaults(func=cmd_run)
 
+    routes = sub.add_parser("routes", help="列出三种流量路由方式与就绪情况")
+    routes.set_defaults(func=cmd_routes)
+
     doctor = sub.add_parser("doctor", help="环境自检")
     doctor.add_argument("--port", type=int, default=0, help="要检查的代理端口")
     doctor.set_defaults(func=cmd_doctor)
+
+    relay = sub.add_parser("relay", help="自建中继（路由方式 3 的服务端）")
+    relay.add_argument("action", nargs="?", default="serve", choices=["serve", "token"],
+                       help="serve=启动中继，token=生成一个随机令牌")
+    relay.add_argument("--listen", default="", help="监听地址，默认 127.0.0.1")
+    relay.add_argument("--port", type=int, default=0, help="监听端口，默认 9052")
+    relay.add_argument("--token", default="", help="访问令牌（不设则任何人可连，慎用）")
+    relay.add_argument("--allow-all", action="store_true", help="关闭目标白名单（任意 host:port）")
+    relay.add_argument("--allow-host", action="append", default=[], help="追加白名单（逗号分隔，可重复）")
+    relay.add_argument("--allow-port", action="append", default=[], help="追加允许端口（可重复）")
+    relay.add_argument("--max-streams", type=int, default=0, help="单连接并发流上限，默认 64")
+    relay.add_argument("--tls-cert", default="", help="TLS 证书（给中继套上 wss://）")
+    relay.add_argument("--tls-key", default="", help="TLS 私钥")
+    relay.add_argument("--allow-private", action="store_true",
+                       help=argparse.SUPPRESS)  # 仅供本机测试：允许连接私有地址
+    relay.set_defaults(func=cmd_relay)
+
+    tunnel = sub.add_parser("tunnel", help="探测中继是否真的可用")
+    tunnel.add_argument("action", nargs="?", default="probe", choices=["probe", "check"],
+                        help="probe=快速探测，check=完整目标清单")
+    tunnel.add_argument("--relay-url", default="", help="中继地址，默认取配置")
+    tunnel.add_argument("--relay-token", default="", help="中继令牌")
+    tunnel.add_argument("--route", default="", help="按某个路由的配置取中继地址")
+    tunnel.add_argument("--hosts", default="", help="自定义目标，形如 a.com:443,b.com:443")
+    tunnel.add_argument("--http", action="store_true", help="额外发一个 HTTP 请求验证双向数据")
+    tunnel.add_argument("--front", default="", help="域前置：TLS SNI 用这个域名")
+    tunnel.add_argument("--insecure", action="store_true", help="不校验证书（自签证书时用）")
+    tunnel.add_argument("--timeout", type=float, default=15.0, help="单个目标的超时秒数")
+    tunnel.set_defaults(func=cmd_tunnel)
 
     bridges = sub.add_parser("bridges", help="网桥管理")
     bridges.add_argument("action", choices=["list", "add", "rm", "import", "clipboard", "normalize", "test"])
@@ -792,11 +1008,48 @@ CONFIG_TEMPLATE = """# TorSOCKS5 配置示例
 [proxy]
 listen = "127.0.0.1"
 port = 9051
+# 流量路由方式: tor-meek | cf-relay | self-relay
+route = "tor-meek"
 # username 非空则启用 RFC 1929 认证
 username = ""
 password = ""
 allow_from = ["127.0.0.1", "::1"]
 udp_associate = true
+
+# 智能分流（只对 cf-relay / self-relay 生效）
+# mode: auto | smart | all | off
+#   auto  = 按路由自动选（cf-relay → smart；self-relay → all）
+#   smart = 命中内置「需要辅助访问」名单才走隧道，其余直连
+#   all   = 除私有地址外全部走隧道
+#   off   = 不分流，全部走隧道
+[split]
+mode = "auto"
+builtin_proxy = true
+builtin_direct = true
+# proxy_hosts = ["example.com"]
+# direct_hosts = ["intranet.example"]
+
+# 路由 2：Cloudflare Worker 中转（部署步骤见 deploy/cloudflare/README.md）
+[cf_relay]
+url = ""
+token = ""
+# links = 4          # 并发 WS 链路数（每条链路最多 6 条流）
+# max_streams = 6    # 平台硬限制，不要调大
+
+# 路由 3：自建 / 多平台中继（torsocks5 relay serve，或 deploy/deno/）
+[self_relay]
+url = ""
+token = ""
+
+# 自建中继服务端（torsocks5 relay serve 读取这里）
+[relay]
+listen = "127.0.0.1"
+port = 9052
+token = ""
+allow_all = false
+max_streams = 64
+# allow_hosts = ["github.com", "pypi.org"]
+# allow_ports = [443, 80, 22, 9418]
 
 [tor]
 # binary = ""            # 留空自动探测

@@ -22,6 +22,11 @@ datas = [
     (os.path.join(ROOT, "torsocks5", "config.example.toml"), "torsocks5"),
     (os.path.join(ROOT, "LICENSE"), "."),
     (os.path.join(ROOT, "README.md"), "."),
+    # 随包附带协议规范与三种路由的说明，方便离线查阅
+    (os.path.join(ROOT, "docs", "tunnel-protocol.md"), "docs"),
+    (os.path.join(ROOT, "docs", "routes.md"), "docs"),
+    # Cloudflare Worker 与 Deno 中继的部署物（部署时直接用得上）
+    (os.path.join(ROOT, "deploy"), "deploy"),
 ]
 
 hiddenimports = [
@@ -35,6 +40,26 @@ hiddenimports = [
     "torsocks5.tor.find",
     "torsocks5.service",
     "torsocks5.selftest",
+    # 隧道路由（路由 2 / 路由 3）与自建中继
+    "torsocks5.defaults",
+    "torsocks5.hostrules",
+    "torsocks5.split",
+    "torsocks5.routes",
+    "torsocks5.routes.base",
+    "torsocks5.routes.tor_meek",
+    "torsocks5.routes.tunnel_base",
+    "torsocks5.routes.cf_relay",
+    "torsocks5.routes.self_relay",
+    "torsocks5.routes.upstream",
+    "torsocks5.tunnel",
+    "torsocks5.tunnel.protocol",
+    "torsocks5.tunnel.wsframe",
+    "torsocks5.tunnel.wsclient",
+    "torsocks5.tunnel.wsserver",
+    "torsocks5.tunnel.stream",
+    "torsocks5.tunnel.client",
+    "torsocks5.tunnel.relay",
+    "torsocks5.tunnel.probe",
 ]
 
 a = Analysis(
