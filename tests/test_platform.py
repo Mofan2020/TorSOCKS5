@@ -208,8 +208,16 @@ class BundledTorLibTest(unittest.TestCase):
 
         self.assertEqual(find.bundled_lib_dir("/usr/bin/tor"), "")
 
+    @staticmethod
+    def _lib_path_key() -> str:
+        """本平台用于指定动态库搜索路径的环境变量名。"""
+        if sys.platform == "darwin":
+            return "DYLD_LIBRARY_PATH"
+        if os.name == "nt":
+            return "PATH"
+        return "LD_LIBRARY_PATH"
+
     def test_child_env_sets_path(self):
-        import sys as _sys
         import tempfile
 
         from torsocks5.tor import find
@@ -222,21 +230,43 @@ class BundledTorLibTest(unittest.TestCase):
                 handle.write("#!/bin/sh\necho 'Tor version 0.4.9.12'\n")
             os.chmod(fake, 0o755)
             env = find.child_env(fake)
-            if _sys.platform == "darwin":
-                key = "DYLD_LIBRARY_PATH"
-            elif os.name == "nt":
-                key = "PATH"
-            else:
-                key = "LD_LIBRARY_PATH"
+            key = self._lib_path_key()
             # macOS 上临时目录是 /var -> /private/var 的符号链接，比较时统一 realpath
             self.assertIn(os.path.realpath(tor_dir), os.path.realpath(env[key]))
 
-            # 真实执行：带库目录的环境应能拿到版本号
-            version = find.tor_version(fake)
-            self.assertEqual(version, (0, 4, 9))
+    @unittest.skipIf(os.name == "nt",
+                     "POSIX shell 桩脚本没法在 Windows 上执行；"
+                     "随包真 tor 的可执行性由 release 冒烟测试（真实二进制）覆盖")
+    def test_bundled_tor_is_really_executable(self):
+        """带库目录的环境要真能让子进程跑起来（POSIX 专用）。
+
+        桩脚本是 ``#!/bin/sh``，只有在能执行 shebang 脚本的系统上才有意义，
+        所以 Windows 上跳过；Windows 的做法由 release 工作流里
+        「随包 tor 可用性」那一步用真实 tor.exe 验证。
+        """
+        import tempfile
+
+        from torsocks5.tor import find
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tor_dir = os.path.join(tmp, "tor")
+            os.makedirs(tor_dir)
+            fake = os.path.join(tor_dir, "tor")
+            with open(fake, "w") as handle:
+                handle.write("#!/bin/sh\necho 'Tor version 0.4.9.12'\n")
+            os.chmod(fake, 0o755)
+            self.assertEqual(find.tor_version(fake), (0, 4, 9))
 
     def test_child_env_without_bundled_dir_is_unchanged(self):
         from torsocks5.tor import find
 
         env = find.child_env("/usr/bin/tor")
-        self.assertNotIn("LD_LIBRARY_PATH", env)
+        key = self._lib_path_key()
+        parent = os.environ.get(key)
+        if parent is None:
+            self.assertNotIn(key, env, "系统 tor 不该凭空加上 %s" % key)
+        else:
+            # CI 环境本身可能已经设了这个变量（GitHub Actions 的 runner 就带着
+            # LD_LIBRARY_PATH），此时要验证的是「原样保留」，而不是「不存在」
+            self.assertEqual(env.get(key), parent, "系统 tor 不该改动已有的 %s" % key)
+        self.assertEqual(find.bundled_lib_dir("/usr/bin/tor"), "")

@@ -861,7 +861,7 @@ __OwningControllerProcess <pid>     # 控制器退出时自动关闭 tor（POSIX
 | 5 MB 下载（不走代理，对照） | 742 KB/s（6.73 s） |
 | 并发 20 路（经隧道访问同一站点） | **20 成功 / 0 失败** |
 | 建流耗时（中继→目标 TCP） | github.com:443 约 1~2 ms；example.com:443 约 1.2 s（取决于对端） |
-| 单元测试 | 129 个用例全绿（其中隧道相关 49 个，全部离线） |
+| 单元测试 | 130 个用例全绿（其中隧道相关 49 个，全部离线） |
 
 结论：**本机中继的隧道开销可以忽略**（798 KB/s vs 742 KB/s，在同一测量的正常波动内），
 瓶颈在中继机器的出口带宽，而不是协议本身。相比 meek 的约 25 KB/s 快了约 30 倍。
@@ -1003,7 +1003,7 @@ git clone https://github.com/Mofan2020/TorSOCKS5.git
 cd TorSOCKS5
 pip install -e ".[dev]"
 
-# 单元测试（129 个用例，全部离线、不需要网络与 tor）
+# 单元测试（130 个用例，全部离线、不需要网络与 tor）
 python -m unittest discover -s tests -v
 
 # 离线端到端自检
