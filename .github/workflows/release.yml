@@ -31,6 +31,14 @@ jobs:
           - os: ubuntu-24.04-arm
             label: linux-aarch64
             tor_pkg: tor-expert-bundle-linux-aarch64
+            # 官方从未在稳定渠道发布 aarch64 expert bundle（15.0.x 的该列为空），
+            # 只有 alpha 渠道有（tor 守护进程与稳定版同源），作为额外候选补在基础列表之后
+            tor_extra: |
+              https://dist.torproject.org/torbrowser/15.0.23/tor-expert-bundle-linux-aarch64-15.0.23.tar.gz
+              https://dist.torproject.org/torbrowser/16.0a12/tor-expert-bundle-linux-aarch64-16.0a12.tar.gz
+              https://archive.torproject.org/tor-package-archive/torbrowser/16.0a12/tor-expert-bundle-linux-aarch64-16.0a12.tar.gz
+              https://dist.torproject.org/torbrowser/16.0a11/tor-expert-bundle-linux-aarch64-16.0a11.tar.gz
+              https://archive.torproject.org/tor-package-archive/torbrowser/16.0a11/tor-expert-bundle-linux-aarch64-16.0a11.tar.gz
           - os: macos-15
             label: macos-arm64
             tor_pkg: tor-expert-bundle-macos-aarch64
@@ -62,6 +70,7 @@ jobs:
         env:
           TOR_PKG: ${{ matrix.tor_pkg }}
           TOR_LABEL: ${{ matrix.label }}
+          TOR_EXTRA_URLS: ${{ matrix.tor_extra }}
         run: |
           set -uo pipefail
           mkdir -p /tmp/torpkg dist/tor
@@ -72,6 +81,10 @@ jobs:
             "https://ftp.torproject.org/tor-package-archive/torbrowser/${TOR_TBB_VERSION}/${TOR_PKG}-${TOR_TBB_VERSION}.tar.gz"
             "https://archive.torproject.org/tor-package-archive/torbrowser/${TOR_TBB_VERSION}/${TOR_PKG}-${TOR_TBB_VERSION}.tar.gz"
           )
+          # 矩阵可选的平台额外候选（如官方只在 alpha 渠道发布的 aarch64 bundle）
+          while IFS= read -r EXTRA_URL; do
+            [ -n "$EXTRA_URL" ] && CANDIDATES+=("$EXTRA_URL")
+          done <<< "${TOR_EXTRA_URLS:-}"
           OK=""
           for URL in "${CANDIDATES[@]}"; do
             echo "尝试下载: $URL"
