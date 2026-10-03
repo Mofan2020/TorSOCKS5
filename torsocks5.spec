@@ -25,8 +25,6 @@ datas = [
     # 随包附带协议规范与三种路由的说明，方便离线查阅
     (os.path.join(ROOT, "docs", "tunnel-protocol.md"), "docs"),
     (os.path.join(ROOT, "docs", "routes.md"), "docs"),
-    # Cloudflare Worker 与 Deno 中继的部署物（部署时直接用得上）
-    (os.path.join(ROOT, "deploy"), "deploy"),
 ]
 
 hiddenimports = [
