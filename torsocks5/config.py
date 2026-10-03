@@ -350,6 +350,13 @@ DEFAULTS: List[Tuple[str, Any]] = [
     ("hotreload.api_host", "127.0.0.1"),
     ("hotreload.api_port", 9053),
     ("hotreload.api_path", "/api/config/reload"),
+    # Web 管理面板（零构建：Tailwind/Alpine/htmx CDN，Basic Auth）
+    ("web.enabled", False),
+    ("web.listen", "127.0.0.1"),
+    ("web.port", 9054),
+    ("web.username", ""),
+    ("web.password", ""),   # 留空则启动时随机生成并打印到日志
+
     # 结构化日志（[logging] 段）
     ("logging.format", "json"),
     ("logging.level", "info"),

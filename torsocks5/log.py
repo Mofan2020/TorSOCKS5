@@ -6,7 +6,8 @@ import os
 import sys
 import threading
 import time
-from typing import Optional, TextIO
+from collections import deque
+from typing import List, Optional, TextIO, Tuple
 
 LEVELS = {"debug": 10, "info": 20, "warn": 30, "error": 40, "silent": 100}
 
@@ -79,6 +80,10 @@ class Logger:
         #: 结构化日志汇（可选）：收到 ``(level_name, message)``
         self._structured = None
         self._structured_owner = None
+        #: 额外日志汇列表（如 Web 面板实时日志流）
+        self._sinks: list = []
+        #: 最近日志环形缓冲（供 Web 面板启动时回填历史）
+        self._history: deque = deque(maxlen=500)
         if log_file:
             try:
                 directory = os.path.dirname(os.path.abspath(log_file))
@@ -101,6 +106,7 @@ class Logger:
                 line = "%s %s %s\n" % (stamp, level_name.upper().ljust(5), message)
             self.stream.write(line)
             self.stream.flush()
+            self._history.append((level_name, message))
             if self.file is not None:
                 self.file.write("%s %s %s\n" % (stamp, level_name.upper(), message))
                 self.file.flush()
@@ -109,11 +115,31 @@ class Logger:
                     self._structured(level_name, message)
                 except Exception:  # noqa: BLE001 - 结构化日志失败不影响主流程
                     pass
+            for sink in list(self._sinks):
+                try:
+                    sink(level_name, message)
+                except Exception:  # noqa: BLE001
+                    pass
 
     def set_structured(self, sink, owner=None) -> None:
         """挂接结构化日志汇（如 JSON Lines 文件），``owner`` 关闭时一并关闭。"""
         self._structured = sink
         self._structured_owner = owner
+
+    def add_sink(self, sink) -> None:
+        """追加一个日志汇 ``(level_name, message) -> None``（如实时日志流）。"""
+        self._sinks.append(sink)
+
+    def history(self, limit: int = 200) -> List[Tuple[str, str]]:
+        """最近的日志（级别, 消息），供实时日志流启动时回填。"""
+        with self.lock:
+            return list(self._history)[-limit:]
+
+    def remove_sink(self, sink) -> None:
+        try:
+            self._sinks.remove(sink)
+        except ValueError:
+            pass
 
     def debug(self, message: str) -> None:
         self._emit("debug", message, "debug")

@@ -343,6 +343,33 @@ class HotReloadManager:
             on_log=self.logger.debug,
         )
 
+    def switch_route(self, route_name: str) -> Dict[str, Any]:
+        """运行期切换路由（仅改内存配置并热切换，不写回配置文件）。
+
+        面板「切换路由」按钮与 ``POST /api/routes/switch`` 走这里。
+        失败时回滚并尝试切回旧路由。
+        """
+        with self._lock:
+            section = self.config.data.get("proxy")
+            if not isinstance(section, dict):
+                section = {}
+                self.config.data["proxy"] = section
+            old_route = section.get("route")
+            section["route"] = route_name
+            try:
+                self._rebuild_route()
+            except Exception as exc:  # noqa: BLE001 - 构造路由的异常类型不统一
+                section["route"] = old_route
+                try:
+                    self._rebuild_route()
+                except Exception:  # noqa: BLE001 - 回滚也失败就只能等重启
+                    self.logger.error("路由切换失败且回滚失败: %s" % exc)
+                return {"success": False, "error": str(exc)}
+            self._reload_count += 1
+            self.logger.ok("路由已切换: %s -> %s（运行期，不写入配置文件）"
+                           % (old_route, route_name))
+            return {"success": True, "route": route_name, "old_route": old_route}
+
     def get_status(self) -> Dict[str, Any]:
         return {
             "enabled": self.hotreload_config.enabled,

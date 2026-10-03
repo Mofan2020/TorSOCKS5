@@ -250,6 +250,26 @@ def cmd_run(args: argparse.Namespace, logger: log_mod.Logger) -> int:
                         % (config.get("hotreload.signal") or "SIGHUP"))
         hot_api = hotreload_mod.start_reload_api(hot_manager)
 
+    # ---------------------------------------------------------------- Web 面板
+    web_panel = None
+    if _bool(config.get("web.enabled")) or getattr(args, "web", False):
+        from .web import WebPanel
+
+        web_panel = WebPanel(
+            config,
+            logger,
+            get_socks_server=lambda: socks_server,
+            get_route=lambda: current_route["route"],
+            get_hot_manager=lambda: hot_manager,
+            version=__version__,
+            force_enable=bool(getattr(args, "web", False)),
+        )
+        if web_panel.start():
+            logger.add_sink(web_panel.log_stream.publish)
+            # 回填启动日志，避免面板日志页一开始是空的
+            for level_name, message in logger.history():
+                web_panel.log_stream.publish(level_name, message)
+
     stop_event = threading.Event()
 
     def shutdown(_signum=None, _frame=None) -> None:
@@ -270,6 +290,9 @@ def cmd_run(args: argparse.Namespace, logger: log_mod.Logger) -> int:
     finally:
         logger.info("正在关闭…")
         socks_server.shutdown()
+        if web_panel is not None:
+            logger.remove_sink(web_panel.log_stream.publish)
+            web_panel.stop()
         if hot_manager is not None:
             hot_manager.stop_watcher()
         if hot_api is not None:
@@ -1012,6 +1035,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--ready-timeout", type=int, default=300,
                         help="等待 Tor 引导完成的秒数（meek 首次引导可能需要几分钟），0 表示不等待")
     run.add_argument("--keep-going", action="store_true", help="引导失败也继续提供服务")
+    run.add_argument("--web", action="store_true",
+                     help="启动 Web 管理面板（等价 [web] enabled=true，默认 127.0.0.1:9054）")
     run.set_defaults(func=cmd_run)
 
     routes = sub.add_parser("routes", help="列出三种流量路由方式与就绪情况")
@@ -1217,6 +1242,14 @@ api_enabled = true         # HTTP API（仅监听 127.0.0.1，认证用 proxy.us
 # max_age_days = 30
 # compress = true
 # redact = []               # 额外脱敏的字段名
+
+# Web 管理面板（也可以 `torsocks5 run --web` 临时开启）
+[web]
+enabled = false
+# listen = "127.0.0.1"
+# port = 9054
+# username = "admin"
+# password = ""            # 留空则启动时随机生成并打印到日志
 
 [tor]
 # binary = ""            # 留空自动探测

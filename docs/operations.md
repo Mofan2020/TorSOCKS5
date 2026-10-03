@@ -114,9 +114,40 @@ access_log_format = "json"       # json | text
 
 ---
 
+## 4. Web 管理面板
+
+`torsocks5 run --web`（或 `[web] enabled = true`）在代理进程里起一个本机面板：
+
+```toml
+[web]
+enabled = true
+listen = "127.0.0.1"        # 默认只监听本机；改 0.0.0.0 前务必设强密码
+port = 9054
+username = "admin"
+password = ""               # 留空则启动时随机生成并打印到日志
+```
+
+| 页面 | 能力 |
+| --- | --- |
+| `/` 仪表盘 | 实时连接数、上下行流量、运行时长、路由状态、分流统计，2 秒自动刷新 |
+| `/routes` 路由 | 查看当前路由与中继节点健康，一键**热切换**路由（不写配置文件） |
+| `/bridges` 网桥 | 列表 / 添加 / 删除网桥（落盘 `bridges.toml`） |
+| `/config` 配置 | TOML 编辑器：先语法校验再原子写入，保存后自动热重载 |
+| `/logs` 日志 | SSE 实时日志流（含启动历史回填），支持暂停滚动与清屏 |
+
+- **认证**：Basic Auth，凭据取 `[web] username/password`；未配置密码时启动随机生成；
+  写操作额外校验 `Origin`（跨站 POST 一律 403，防 CSRF）。
+- **技术栈**：`http.server.ThreadingHTTPServer` + CDN 引入的 Tailwind / Alpine / htmx，
+  零构建、零运行期第三方依赖。
+- **与热重载的关系**：面板的「保存配置」「触发重载」「切换路由」都走
+  `HotReloadManager`（同一个后端），日志流挂在 `Logger` 的 sink 上。
+
+---
+
 ## 相关测试
 
 ```bash
 python -m unittest tests.test_hotreload    # 热重载：diff / 重建判定 / API 认证
+python -m unittest tests.test_web          # 面板：认证 / 页面 / API / CSRF / SSE
 python -m unittest tests.test_phase1       # 限流 / 连接限制 / IP 过滤 / 熔断 / 负载均衡
 ```

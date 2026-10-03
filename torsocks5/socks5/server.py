@@ -271,6 +271,7 @@ class SocksConnection:
                     if not data:
                         break
                     self.bytes_up += len(data)
+                    self.server.bytes_up_total += len(data)
                     upstream.sendall(data)
             except OSError:
                 pass
@@ -288,6 +289,7 @@ class SocksConnection:
                     if not data:
                         break
                     self.bytes_down += len(data)
+                    self.server.bytes_down_total += len(data)
                     self.sock.sendall(data)
             except OSError:
                 pass
@@ -383,6 +385,7 @@ class SocksConnection:
                 except OSError:
                     continue
                 self.bytes_down += len(payload)
+                self.server.bytes_down_total += len(payload)
 
         def to_tor() -> None:
             while not stop.is_set():
@@ -417,6 +420,7 @@ class SocksConnection:
                 try:
                     target.sendto(payload, (peer_host, peer_port))
                     self.bytes_up += len(payload)
+                    self.server.bytes_up_total += len(payload)
                 except OSError:
                     continue
 
@@ -544,6 +548,9 @@ class SocksServer:
         self._threads: List[threading.Thread] = []
         self.total_connections = 0
         self.started_at = 0.0
+        #: 服务级流量聚合（Web 面板展示用；多线程下允许极小误差）
+        self.bytes_up_total = 0
+        self.bytes_down_total = 0
 
     # ------------------------------------------------------------------ 基础设施
     def log(self, message: str) -> None:
@@ -628,3 +635,16 @@ class SocksServer:
 
     def stats(self) -> str:
         return "已服务 %d 条连接，当前 %d 条" % (self.total_connections, self._connections)
+
+    def stats_dict(self) -> dict:
+        """结构化统计（Web 面板 / API 用）。"""
+        return {
+            "listen": "%s:%d" % (self.host, self.port),
+            "route_auth": bool(self.username),
+            "max_connections": self.max_connections,
+            "current_connections": self._connections,
+            "total_connections": self.total_connections,
+            "bytes_up": self.bytes_up_total,
+            "bytes_down": self.bytes_down_total,
+            "uptime": round(time.time() - self.started_at, 1) if self.started_at else 0,
+        }

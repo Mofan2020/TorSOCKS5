@@ -506,9 +506,16 @@ torsocks5 run --upstream 127.0.0.1:9050  # 复用已有的 SOCKS5 端口，只�
 torsocks5 run --tor /opt/homebrew/bin/tor  # 指定 tor 路径
 torsocks5 run --ready-timeout 600      # 引导超时（秒），默认 300
 torsocks5 run --keep-going             # 引导失败也继续监听
+torsocks5 run --web                    # 开 Web 管理面板（127.0.0.1:9054，Basic Auth）
 ```
 
 退出码：`0` 正常退出 · `2` 参数/配置错误 · `3` 路由启动失败 · `4` 就绪超时。
+
+**Web 管理面板**：仪表盘（连接/流量/路由状态）、在线切换路由、网桥增删、
+配置编辑（保存即热重载）、实时日志流。默认关闭，用 `--web` 或配置
+`[web] enabled = true` 开启；账号密码写在配置文件里（密码留空则启动时随机
+生成并打印到日志）。纯标准库服务 + CDN 前端（Tailwind / Alpine / htmx），
+零构建零运行期依赖。详见[docs/operations.md](docs/operations.md)。
 
 ### `routes` — 三种路由方式与就绪情况
 
@@ -713,6 +720,12 @@ watch = false               # true = 监听配置文件保存即自动重载
 api_enabled = true          # 本机 HTTP API（仅 127.0.0.1，认证用 proxy 的账号密码）
 # api_port = 9053
 # 触发：curl -u user:pass -X POST http://127.0.0.1:9053/api/config/reload
+
+[web]                       # Web 管理面板（torsocks5 run --web 也能开）
+enabled = false
+# port = 9054
+# username = "admin"
+# password = ""             # 留空则启动时随机生成并打印到日志
 
 [logging]                   # 结构化日志：配置 file 后同时写 JSON Lines
 # format = "json"           # json | text；带轮转、gzip 压缩与敏感字段脱敏
@@ -945,7 +958,7 @@ __OwningControllerProcess <pid>     # 控制器退出时自动关闭 tor（POSIX
 | 5 MB 下载（不走代理，对照） | 742 KB/s（6.73 s） |
 | 并发 20 路（经隧道访问同一站点） | **20 成功 / 0 失败** |
 | 建流耗时（中继→目标 TCP） | github.com:443 约 1~2 ms；example.com:443 约 1.2 s（取决于对端） |
-| 单元测试 | 166 个用例全绿（其中隧道相关 49 个，全部离线） |
+| 单元测试 | 175 个用例全绿（其中隧道相关 49 个，全部离线） |
 
 结论：**本机中继的隧道开销可以忽略**（798 KB/s vs 742 KB/s，在同一测量的正常波动内），
 瓶颈在中继机器的出口带宽，而不是协议本身。相比 meek 的约 25 KB/s 快了约 30 倍。
@@ -1089,7 +1102,7 @@ git clone https://github.com/Mofan2020/TorSOCKS5.git
 cd TorSOCKS5
 pip install -e ".[dev]"
 
-# 单元测试（166 个用例，全部离线、不需要网络与 tor）
+# 单元测试（175 个用例，全部离线、不需要网络与 tor）
 python -m unittest discover -s tests -v
 
 # 离线端到端自检
