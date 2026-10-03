@@ -197,8 +197,9 @@ api_enabled = true         # 本机 HTTP API（只监听 127.0.0.1）
 
 [web]
 # Web 管理面板：仪表盘 / 路由切换 / 网桥管理 / 配置编辑 / 实时日志。
-# 也可以用 `torsocks5 run --web` 临时开启（等价 enabled = true）。
-enabled = false
+# 也可以用 `torsocks5 run --web` 临时开启（等价 enabled = true），
+# 或 `torsocks5 run --no-web` 强制关闭。
+enabled = true
 listen = "127.0.0.1"         # 默认只监听本机；改 0.0.0.0 前请务必设置强密码
 port = 9054
 # Basic Auth 账号密码（写在配置文件里）。密码留空则启动时随机生成并打印到日志。

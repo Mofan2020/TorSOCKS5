@@ -270,7 +270,8 @@ def cmd_run(args: argparse.Namespace, logger: log_mod.Logger) -> int:
 
     # ---------------------------------------------------------------- Web 面板
     web_panel = None
-    if _bool(config.get("web.enabled")) or getattr(args, "web", False):
+    web_enabled = _bool(config.get("web.enabled")) or getattr(args, "web", False)
+    if web_enabled and not getattr(args, "no_web", False):
         from .web import WebPanel
 
         web_panel = WebPanel(
@@ -1055,6 +1056,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--keep-going", action="store_true", help="引导失败也继续提供服务")
     run.add_argument("--web", action="store_true",
                      help="启动 Web 管理面板（等价 [web] enabled=true，默认 127.0.0.1:9054）")
+    run.add_argument("--no-web", action="store_true",
+                     help="强制禁用 Web 管理面板（覆盖配置文件）")
     run.set_defaults(func=cmd_run)
 
     routes = sub.add_parser("routes", help="列出三种流量路由方式与就绪情况")
@@ -1261,9 +1264,9 @@ api_enabled = true         # HTTP API（仅监听 127.0.0.1，认证用 proxy.us
 # compress = true
 # redact = []               # 额外脱敏的字段名
 
-# Web 管理面板（也可以 `torsocks5 run --web` 临时开启）
+# Web 管理面板（也可以 `torsocks5 run --web` 临时开启，或 `torsocks5 run --no-web` 强制关闭）
 [web]
-enabled = false
+enabled = true
 # listen = "127.0.0.1"
 # port = 9054
 # username = "admin"

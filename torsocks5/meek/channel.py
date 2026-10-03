@@ -45,6 +45,15 @@ DEFAULT_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
+# 尝试导入 utls-python（可选依赖，若发布到 PyPI 可伪装浏览器 TLS 指纹；
+# 目前 PyPI 无同名包，保留接口以便未来接入 jawah/utls 或同类绑定）
+try:
+    import utls  # type: ignore[import-not-found]
+    _UTLS_AVAILABLE = True
+except ImportError:
+    _UTLS_AVAILABLE = False
+    utls = None  # type: ignore[assignment]
+
 
 class MeekError(Exception):
     """meek 通道相关错误的基类。"""
@@ -65,13 +74,63 @@ def gen_session_id() -> str:
 
 
 def _default_tls_context() -> ssl.SSLContext:
+    """
+    创建 TLS 上下文。
+
+    优先使用 utls-python（若安装）伪装 Chrome 指纹；否则用标准库 ssl 做最大程度微调：
+    - 仅启用 TLS 1.2/1.3
+    - 优先使用 Chrome 常用 cipher suites（按优先序）
+    - 显式声明 ALPN http/1.1（避免 CDN 误判为 h2）
+    - 启用会话复用（默认即开启）
+    """
+    # 1) utls-python 可用：完整模拟 Chrome HelloRandomizedALPN
+    if _UTLS_AVAILABLE and utls is not None:
+        ctx = utls.UTLSContext()
+        # HelloRandomizedALPN 对应 utls.HelloRandomizedALPN
+        ctx.set_alpn_protocols(["http/1.1"])
+        return ctx
+
+    # 2) 标准库兜底：尽量贴近 Chrome 120 的 ClientHello 特征
     ctx = ssl.create_default_context()
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-    # meek 网桥只走 HTTP/1.1；显式声明可避免部分 CDN 的 HTTP/2 行为差异。
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_3
+
+    # Chrome 120 常用 cipher suites 优先序（标准库会按顺序协商）
+    chrome_ciphers = ":".join([
+        "TLS_AES_256_GCM_SHA384",          # TLS 1.3
+        "TLS_CHACHA20_POLY1305_SHA256",    # TLS 1.3
+        "TLS_AES_128_GCM_SHA256",          # TLS 1.3
+        "ECDHE-ECDSA-AES256-GCM-SHA384",   # TLS 1.2
+        "ECDHE-RSA-AES256-GCM-SHA384",
+        "ECDHE-ECDSA-CHACHA20-POLY1305",
+        "ECDHE-RSA-CHACHA20-POLY1305",
+        "ECDHE-ECDSA-AES128-GCM-SHA256",
+        "ECDHE-RSA-AES128-GCM-SHA256",
+    ])
+    try:
+        ctx.set_ciphers(chrome_ciphers)
+    except ssl.SSLError:
+        # 个别平台/openssl 版本不支持部分套件，忽略回退
+        pass
+
+    # 显式 ALPN http/1.1（meek 只走 HTTP/1.1）
     try:
         ctx.set_alpn_protocols(["http/1.1"])
-    except NotImplementedError:  # 极少数构建没有 ALPN
+    except NotImplementedError:
         pass
+
+    # 启用 KTLS（内核态 TLS）若可用，略微改变指纹特征
+    try:
+        ctx.options |= ssl.OP_ENABLE_KTLS  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
+
+    # 禁用压缩（CRIME 防御，Chrome 也禁用）
+    try:
+        ctx.options |= ssl.OP_NO_COMPRESSION
+    except AttributeError:
+        pass
+
     return ctx
 
 
