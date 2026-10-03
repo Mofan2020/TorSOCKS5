@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "torsocks5"
-version = "2.0.0"
+version = "2.0.1"
 description = "跨平台 SOCKS5 本地代理：Tor+meek 网桥 / Cloudflare Worker 中转 / 自建隧道路由可选（纯 Python）"
 readme = "README.md"
 requires-python = ">=3.10"

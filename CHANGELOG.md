@@ -40,6 +40,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.1] - 2026-10-04
+
+### Added
+- **Web panel enabled by default**: `torsocks5 run` now starts the Web UI automatically (127.0.0.1:9054). New users see the dashboard URL and random password in the startup log. Use `--no-web` to disable or set `[web] enabled = false` in config.
+- **`--no-web` CLI flag**: Override config to force-disable the panel.
+- **Restored `deploy/cloudflare/`**: Cloudflare Worker TSU/1 relay source code back in repo for self-deployment reference (was removed in v2.0.0 BREAKING, now restored as documentation/example).
+
+### Changed
+- **meek TLS fingerprint hardening** (`torsocks5/meek/channel.py`): Standard-library fallback now uses Chrome 120 cipher suite order, explicit ALPN http/1.1, TLS 1.2/1.3 only, KTLS where available, compression disabled. Optional `utls-python` integration point reserved for full browser fingerprint (PyPI package not yet available; interface ready).
+
+### Fixed
+- Windows CI tests: TOML path escaping for backslash-containing temp paths (`test_web.py`, `test_wizard.py`).
+- Release build: aarch64 tor expert bundle now downloads from alpha channel (16.0a12) since stable never publishes aarch64.
+- Spec: removed stale `deploy/` reference from `torsocks5.spec` (caused PyInstaller failures).
+
+---
+
 ## [1.1.0] - 2026-09-28
 
 ### Added
