@@ -22,6 +22,7 @@ from .. import bridges as bridges_mod
 from .. import config as config_mod
 from .. import log as log_mod
 from .. import routes as routes_mod
+from .. import version_check as version_check_mod
 from . import html as html_mod
 from .logstream import LogStream
 
@@ -187,6 +188,7 @@ class WebPanel:
             "route": route_info,
             "split": split_stats,
             "hotreload": hot.get_status() if hot is not None else None,
+            "update": version_check_mod.get_status(),
             "bridge_count": len(self._load_store().active()),
             "config_path": self.config.path,
         }

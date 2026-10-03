@@ -126,7 +126,7 @@ Deno 中继四个实现都照它写。CI 里 `scripts/check_docs.py` 会校验�
 ## 怎么验证这次改动
 
 ```bash
-# 1. 单元测试（175 个，全部离线、不需要网络与 tor）
+# 1. 单元测试（190 个，全部离线、不需要网络与 tor）
 python -m unittest discover -s tests -v
 
 # 2. CLI 级端到端冒烟（起两个真进程，经 SOCKS5 取数据）

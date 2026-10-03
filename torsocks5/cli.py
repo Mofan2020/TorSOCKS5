@@ -32,6 +32,7 @@ from . import bridges as bridges_mod
 from . import config as config_mod
 from . import log as log_mod
 from . import routes as routes_mod
+from . import version_check as version_check_mod
 from .socks5.server import SocksServer
 from .tor import find as tor_find
 from .tor.manager import TorProcess, port_available
@@ -249,6 +250,22 @@ def cmd_run(args: argparse.Namespace, logger: log_mod.Logger) -> int:
             logger.info("配置热重载: 发送 %s 触发（或改配置文件后等待轮询）"
                         % (config.get("hotreload.signal") or "SIGHUP"))
         hot_api = hotreload_mod.start_reload_api(hot_manager)
+
+    # ------------------------------------------------- 版本更新检查（后台、静默）
+    def _on_version_result(status) -> None:
+        """检查结束回调：仅在发现新版本时打一行提示（失败静默）。"""
+        if status.get("has_update"):
+            logger.ok("发现新版本 %s（当前 %s）：%s"
+                      % (status.get("latest"), status.get("current"),
+                         status.get("url")))
+
+    _vc_interval = config.get("version_check.interval_hours")
+    version_check_mod.start(
+        __version__,
+        enabled=_bool(config.get("version_check.enabled")),
+        interval_hours=24.0 if _vc_interval is None else float(_vc_interval),
+        on_result=_on_version_result,
+    )
 
     # ---------------------------------------------------------------- Web 面板
     web_panel = None
@@ -1250,6 +1267,11 @@ enabled = false
 # port = 9054
 # username = "admin"
 # password = ""            # 留空则启动时随机生成并打印到日志
+
+# 版本更新检查：启动时后台查 GitHub Releases（3 秒超时、失败静默、可关闭）
+[version_check]
+enabled = true
+# interval_hours = 24      # 结果缓存时长
 
 [tor]
 # binary = ""            # 留空自动探测

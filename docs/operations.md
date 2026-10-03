@@ -144,10 +144,31 @@ password = ""               # 留空则启动时随机生成并打印到日志
 
 ---
 
+## 5. 版本更新检查
+
+`run` 启动时在后台线程查询一次 GitHub Releases，**不阻塞启动**（网络超时 3 秒）：
+
+```toml
+[version_check]
+enabled = true         # 关闭后完全不发请求
+interval_hours = 24    # 结果缓存时长（0 = 每次启动都查）
+```
+
+- **提示位置**：发现新版本 → 启动日志打一行 `发现新版本 vX.Y.Z（当前 a.b.c）：<发布页>`；
+  Web 面板仪表盘显示琥珀色横幅（`/api/status` 的 `update` 字段）。
+- **失败静默**：中国大陆访问 GitHub 可能失败，错误只记在内存状态里
+  （`update.error`），不打印、不重试、不影响任何功能。
+- **缓存**：结果写在用户配置目录 `version_check.json`（原子写）；有效期内直接用缓存。
+- **环境变量**：`TORSOCKS5_VERSION_CHECK_URL` 覆盖接口地址（镜像/测试），
+  `TORSOCKS5_VERSION_CHECK_CACHE` 覆盖缓存路径（沙箱隔离）。
+
+---
+
 ## 相关测试
 
 ```bash
-python -m unittest tests.test_hotreload    # 热重载：diff / 重建判定 / API 认证
-python -m unittest tests.test_web          # 面板：认证 / 页面 / API / CSRF / SSE
-python -m unittest tests.test_phase1       # 限流 / 连接限制 / IP 过滤 / 熔断 / 负载均衡
+python -m unittest tests.test_hotreload        # 热重载：diff / 重建判定 / API 认证
+python -m unittest tests.test_web              # 面板：认证 / 页面 / API / CSRF / SSE
+python -m unittest tests.test_version_check    # 版本检查：比较 / 缓存 / 失败静默
+python -m unittest tests.test_phase1           # 限流 / 连接限制 / IP 过滤 / 熔断 / 负载均衡
 ```

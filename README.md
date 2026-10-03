@@ -727,6 +727,10 @@ enabled = false
 # username = "admin"
 # password = ""             # 留空则启动时随机生成并打印到日志
 
+[version_check]             # 版本更新检查：启动时后台查 GitHub Releases
+enabled = true              # 3 秒超时、结果缓存 24 小时、网络失败完全静默
+# interval_hours = 24
+
 [logging]                   # 结构化日志：配置 file 后同时写 JSON Lines
 # format = "json"           # json | text；带轮转、gzip 压缩与敏感字段脱敏
 # file = "~/.torsocks5/run.jsonl"
@@ -741,6 +745,10 @@ enabled = false
 热重载（SIGHUP / HTTP API）、结构化日志与中继访问日志的完整说明见
 [docs/operations.md](docs/operations.md)；多中继负载均衡与服务端强化见
 [docs/routes.md](docs/routes.md)。
+
+**版本更新检查**：`run` 启动时在后台查询 GitHub Releases（3 秒超时、结果缓存
+24 小时），发现新版本会在日志里打一行提示、Web 面板仪表盘显示横幅；网络失败
+完全静默、绝不影响正常使用，`[version_check] enabled = false` 可关闭。
 
 ## 在各种应用里使用
 
@@ -958,7 +966,7 @@ __OwningControllerProcess <pid>     # 控制器退出时自动关闭 tor（POSIX
 | 5 MB 下载（不走代理，对照） | 742 KB/s（6.73 s） |
 | 并发 20 路（经隧道访问同一站点） | **20 成功 / 0 失败** |
 | 建流耗时（中继→目标 TCP） | github.com:443 约 1~2 ms；example.com:443 约 1.2 s（取决于对端） |
-| 单元测试 | 175 个用例全绿（其中隧道相关 49 个，全部离线） |
+| 单元测试 | 190 个用例全绿（其中隧道相关 49 个，全部离线） |
 
 结论：**本机中继的隧道开销可以忽略**（798 KB/s vs 742 KB/s，在同一测量的正常波动内），
 瓶颈在中继机器的出口带宽，而不是协议本身。相比 meek 的约 25 KB/s 快了约 30 倍。
@@ -1102,7 +1110,7 @@ git clone https://github.com/Mofan2020/TorSOCKS5.git
 cd TorSOCKS5
 pip install -e ".[dev]"
 
-# 单元测试（175 个用例，全部离线、不需要网络与 tor）
+# 单元测试（190 个用例，全部离线、不需要网络与 tor）
 python -m unittest discover -s tests -v
 
 # 离线端到端自检

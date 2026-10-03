@@ -205,6 +205,12 @@ port = 9054
 username = "admin"
 password = ""
 
+[version_check]
+# 版本更新检查：启动时后台查 GitHub Releases（3 秒超时、结果缓存 24 小时、
+# 网络失败完全静默，不影响正常使用）
+enabled = true
+# interval_hours = 24      # 结果缓存时长（0 = 每次启动都查）
+
 [logging]
 # 结构化日志：配置 file 后，日志在写终端的同时追加一份到文件。
 # JSON Lines 格式（每行一个 JSON 对象），带大小+时间轮转、gzip 压缩与敏感信息脱敏。

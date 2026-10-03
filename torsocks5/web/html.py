@@ -72,6 +72,13 @@ def dashboard_page() -> str:
     <span class="text-xs text-slate-400" x-text="d ? ('更新于 ' + d.now) : '加载中…'"></span>
   </div>
 
+  <template x-if="d && d.update && d.update.has_update">
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-700 bg-amber-900/50 px-4 py-3 text-sm text-amber-200">
+      <span>发现新版本 <b x-text="d.update.latest"></b>（当前 <span x-text="d.update.current"></span>）</span>
+      <a :href="d.update.url" target="_blank" rel="noopener" class="underline hover:text-amber-100">查看更新 →</a>
+    </div>
+  </template>
+
   <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
     <div class="rounded-lg bg-slate-800 p-4">
       <div class="text-xs text-slate-400">当前连接</div>

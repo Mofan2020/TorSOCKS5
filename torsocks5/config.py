@@ -357,6 +357,10 @@ DEFAULTS: List[Tuple[str, Any]] = [
     ("web.username", ""),
     ("web.password", ""),   # 留空则启动时随机生成并打印到日志
 
+    # 版本更新检查（启动后台查 GitHub Releases，失败静默、可关闭）
+    ("version_check.enabled", True),
+    ("version_check.interval_hours", 24),
+
     # 结构化日志（[logging] 段）
     ("logging.format", "json"),
     ("logging.level", "info"),

@@ -167,6 +167,7 @@ class WebPanelTest(unittest.TestCase):
         self.assertEqual(data["route"]["name"], "self-relay")
         self.assertEqual(data["split"]["tunnel"], 3)
         self.assertEqual(data["hotreload"]["signal"], "SIGHUP")
+        self.assertIn("update", data)  # 版本检查状态（见 tests.test_version_check）
 
     def test_routes_list_and_switch(self):
         code, body = _http(self.base + "/api/routes", "admin", "secret")
