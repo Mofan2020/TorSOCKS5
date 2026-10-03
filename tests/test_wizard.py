@@ -261,7 +261,9 @@ class WizardApiTest(unittest.TestCase):
                 "\n[web]\nenabled = true\n"
                 "port = 0\n"
                 'username = "admin"\n'
-                'password = "secret"\n' % self.bridges_path)
+                'password = "secret"\n'
+                # Windows 路径反斜杠是 TOML 转义符，写入前统一为正斜杠
+                % self.bridges_path.replace("\\", "/"))
         self.config = config_mod.Config.load(self.config_path)
         self.logger = _StubLogger()
         self.hot = _StubHot()

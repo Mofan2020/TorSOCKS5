@@ -127,7 +127,9 @@ class WebPanelTest(unittest.TestCase):
                 "port = 0\n"
                 'username = "admin"\n'
                 'password = "secret"\n'
-                % os.path.join(self._tmp.name, "bridges.toml")
+                # TOML 基本字符串里反斜杠是转义符（C:\Users 的 \U 会解析失败），
+                # Windows 上统一用正斜杠写入，open() 同样接受
+                % os.path.join(self._tmp.name, "bridges.toml").replace("\\", "/")
             )
 
     # ------------------------------------------------------------ 认证
