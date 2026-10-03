@@ -79,18 +79,17 @@ private network or other similar proxy services」。也就是说，把 Worker �
 
 ### 部署与使用
 
-```bash
-# 1) 部署（零依赖、无需构建）
-cd deploy/cloudflare
-npx wrangler deploy
-npx wrangler secret put TSU_TOKEN      # 自己定一个随机字符串
+> ⚠️ v2.0+ 移除了内置 Worker 代码。请自行实现 TSU/1 协议（参考 [docs/tunnel-protocol.md](tunnel-protocol.md)）并部署到 Cloudflare Worker。
 
-# 2) 写进配置
+```bash
+# 1) 在 Cloudflare Dashboard 创建 Worker，实现 TSU/1 协议
+# 2) 设置环境变量 TSU_TOKEN（随机字符串）
+# 3) 写进配置
 # [cf_relay]
 # url = "wss://<你的-worker>.workers.dev/tsu"
-# token = "<上面的 TSU_TOKEN>"
+# token = "<TSU_TOKEN>"
 
-# 3) 先探测，再启动
+# 4) 先探测，再启动
 torsocks5 tunnel probe --route cf-relay
 torsocks5 run --route cf-relay
 ```
@@ -142,10 +141,9 @@ torsocks5 relay serve --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem
 
 客户端 `url = "wss://你的域名/tsu"`。
 
-### C. Deno Deploy（免费、无需服务器）
+### C. Deno Deploy / 其它平台（自行实现）
 
-见 [`deploy/deno/README.md`](../deploy/deno/README.md)：`Deno.serve` + `Deno.connect`
-原生支持 WebSocket 与出站 TCP，免费额度足够个人使用；可以绑自己的域名。
+参考 TSU/1 协议规范（[tunnel-protocol.md](tunnel-protocol.md)）在 Deno Deploy、VPS 等平台实现中继服务端。Deno 原生 `Deno.serve` + `Deno.connect` 支持 WebSocket 与出站 TCP。
 
 ### 中继的目标策略
 
@@ -161,6 +159,47 @@ torsocks5 relay serve --allow-private                # ⚠️ 放开私有地址
 默认**私有地址/回环/链路本地/CGNAT 一律拒绝**（`BLOCKED_TARGET`）——否则中继会变成
 打穿内网的跳板。唯一的例外是 `--allow-private`（启动时打印警告），它只为本机调试而存在：
 单元测试与冒烟测试要连 `127.0.0.1` 上的假目标。对外提供服务的中继不要开。
+
+### D. 多中继负载均衡（v2.0）
+
+单 `url`/`token` 之外，也可以用 `[[self_relay.nodes]]`（或 `[[cf_relay.nodes]]`）
+同时配置多个中继节点，客户端按策略分发：
+
+```toml
+[self_relay]
+lb_strategy = "weighted_rr"      # weighted_rr | least_conn | split_binding
+circuit_breaker_threshold = 5    # 连续失败熔断阈值
+circuit_breaker_timeout = 60     # 熔断冷却秒数
+
+[[self_relay.nodes]]
+url = "ws://127.0.0.1:9052/tsu"
+token = ""
+weight = 3                       # 加权轮询的权重
+bind_hosts = []                  # split_binding 策略：命中域名固定走此节点
+```
+
+| 策略 | 适用场景 |
+| --- | --- |
+| `weighted_rr` | 节点带宽不同，按权重平滑分摊 |
+| `least_conn` | 连接长短差异大，连接数优先、延迟低者优先 |
+| `split_binding` | 想让特定域名固定走特定节点（如 github 走境外节点） |
+
+客户端对每个节点做健康检查与熔断（连续失败 → 打开 → 冷却后半开探测），
+不可用节点自动跳过；`torsocks5 routes` 显示各节点状态与并发。
+旧的单 `url`/`token` 写法继续可用（等价于一个节点）。
+
+### E. 中继服务端强化（v2.0）
+
+`[relay]` 段新增限流、连接数限制、IP 过滤与访问日志（详见 README「中继服务端强化」）：
+
+```toml
+[relay]
+rate_limit_rps = 100            # 全局/单 IP/单令牌 三层令牌桶限流
+max_conns_per_ip = 16
+ip_blacklist = ["10.1.2.3"]     # CIDR 黑白名单
+circuit_breaker_enabled = true  # 出站失败过多时熔断
+access_log = "relay.jsonl"      # JSON Lines 访问日志（默认不记目标域名）
+```
 
 ---
 
@@ -210,8 +249,7 @@ torsocks5 relay serve --allow-private                # ⚠️ 放开私有地址
 瓶颈不在协议，而在中继机器的出口带宽。对比 meek 的约 25 KB/s，快了约 30 倍。
 
 > `cf-relay` 的实测数据受平台限制影响很大，且 `*.workers.dev` 在部分网络不可达。
-> 本地 workerd（`wrangler dev`）验证的结果记录在
-> [`deploy/cloudflare/README.md`](../deploy/cloudflare/README.md)。
+> 本地 workerd（`wrangler dev`）验证的结果请参考 TSU/1 协议规范自行验证。
 
 ---
 

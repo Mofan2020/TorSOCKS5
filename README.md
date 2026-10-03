@@ -48,7 +48,7 @@ meek 传输与隧道协议都是纯 Python 实现（运行期零第三方依赖�
 ```bash
 torsocks5 routes                       # 看三种方式，以及当前环境各自缺什么
 torsocks5 run                          # 默认 = 路由 1（tor-meek）
-torsocks5 run --route cf-relay         # 路由 2：先部署 deploy/cloudflare/
+torsocks5 run --route cf-relay         # 路由 2：自行部署 Cloudflare Worker 后配置
 torsocks5 relay serve                  # 路由 3：终端 1 起中继
 torsocks5 run --route self-relay --relay-url ws://127.0.0.1:9052/tsu   # 终端 2 起代理
 ```
@@ -106,7 +106,7 @@ torsocks5 run --route self-relay --relay-url ws://127.0.0.1:9052/tsu   # 终端 
 
 | 项目 | 要求 |
 | --- | --- |
-| Python | 3.8 及以上（Windows / macOS / Linux） |
+| Python | 3.10 及以上（Windows / macOS / Linux） |
 | tor | **只有路由 1（tor-meek）需要**；路由 2 / 3 完全不需要 tor |
 | 网络 | 路由 1 需要能连通某个 CDN 前置域名 |
 
@@ -155,12 +155,13 @@ torsocks5 run                       # 等价于 --route tor-meek
 
 **B. Cloudflare Worker 中转（没有服务器时的免费选项）**
 
-```bash
-cd deploy/cloudflare
-npx wrangler deploy                      # 零依赖、无需构建
-npx wrangler secret put TSU_TOKEN        # 自己定一个随机字符串
+> ⚠️ 自行部署并维护 Cloudflare Worker。本项目不再内置 Worker 代码（避免条款风险）。
+> 参考 TSU/1 协议规范：[docs/tunnel-protocol.md](docs/tunnel-protocol.md)
 
-# 把地址写进配置： [cf_relay] url = "wss://<你的-worker>.workers.dev/tsu"
+```bash
+# 1. 在 Cloudflare Dashboard 创建 Worker，粘贴你的 TSU/1 协议实现
+# 2. 设置环境变量 TSU_TOKEN（随机字符串）
+# 3. 把地址写进配置： [cf_relay] url = "wss://<你的-worker>.workers.dev/tsu"
 torsocks5 tunnel probe --route cf-relay  # 先探测：真连一次，看哪些站点可用
 torsocks5 run --route cf-relay
 ```
@@ -175,7 +176,7 @@ torsocks5 relay serve
 torsocks5 run --route self-relay --relay-url ws://127.0.0.1:9052/tsu
 ```
 
-也可以把中继部署到免费的 Deno Deploy（见 [deploy/deno/](deploy/deno/)）或自有 VPS。
+也可以把中继部署到 VPS 或 Deno Deploy（参考 TSU/1 协议规范实现）。
 
 ### 第三步：验证
 
@@ -325,21 +326,21 @@ torsocks5 bridges normalize "..."      # 校验并规范化一行网桥配置
 ```
 
 不需要服务器，用 Cloudflare 免费 Worker 当出口。代价是平台限制与条款风险都很实在。
+**注意：本项目 v2.0+ 不再内置 Worker 代码，请自行实现 TSU/1 协议（见 [docs/tunnel-protocol.md](docs/tunnel-protocol.md)）。**
 
-### 部署（约 1 分钟）
+### 部署（自行实现 Worker）
 
-```bash
-cd deploy/cloudflare
-npx wrangler deploy                          # 仓库里的 Worker 零依赖、无构建步骤
-npx wrangler secret put TSU_TOKEN            # 定一个随机串（客户端要用同一个）
-```
+1. 在 Cloudflare Dashboard 创建 Worker
+2. 实现 TSU/1 协议（WebSocket 升级、帧编解码、目标策略、错误码）
+3. 设置环境变量 `TSU_TOKEN`（随机字符串）
+4. 部署后获得 `wss://<你的-worker>.workers.dev/tsu` 地址
 
 配置：
 
 ```toml
 [cf_relay]
 url = "wss://<你的-worker>.workers.dev/tsu"
-token = "<上面的 TSU_TOKEN>"
+token = "<TSU_TOKEN>"
 ```
 
 ### 先探测再启动
@@ -395,9 +396,9 @@ torsocks5 relay serve --listen 0.0.0.0 --port 9052 --token <随机串> \
 # 也可以放在 Caddy/Nginx 后面做 TLS 终结（把 ws:// 变 wss://）
 ```
 
-### Deno Deploy（免费）
+### Deno Deploy / 其它平台（自行实现）
 
-见 [deploy/deno/](deploy/deno/)：`Deno.serve` + `Deno.connect` 原生支持 WebSocket 与出站 TCP。
+参考 TSU/1 协议规范（[docs/tunnel-protocol.md](docs/tunnel-protocol.md)）在 Deno Deploy、Cloudflare Workers、VPS 等平台实现中继服务端。核心 API：`Deno.serve` / `Deno.connect`（Deno）、`fetch` + `WebSocket`（Workers）、标准库 `asyncio`/`aiohttp`（Python VPS）。
 
 ### 中继的目标策略
 
@@ -411,6 +412,24 @@ torsocks5 relay serve --allow-private               # ⚠️ 放开私有地址�
 默认情况下**私有地址 / 回环 / 链路本地 / CGNAT 一律拒绝**，否则中继就是打穿内网的跳板。
 唯一的例外是 `--allow-private`：它存在只是为了本机调试（单元测试与冒烟测试要连
 `127.0.0.1` 上的假目标），启动时会打印警告。**对外提供服务的中继不要开这个开关。**
+
+### 中继服务端强化（限流 / 连接限制 / 访问日志）
+
+对外提供服务的中继可以在 `[relay]` 段开启防护（全部可选，默认关闭）：
+
+```toml
+[relay]
+rate_limit_rps = 100          # 全局限流（令牌桶，每秒令牌数）
+per_client_rps = 10           # 单客户端 IP 限流
+per_token_rps = 20            # 单令牌限流
+max_conns_per_ip = 16         # 单 IP 最大并发连接
+ip_blacklist = ["10.1.2.3"]   # 黑名单（CIDR 也行）；ip_whitelist 非空则只放行白名单
+circuit_breaker_enabled = true  # 窗口内出站失败过多 → 短暂拒绝新连接
+access_log = "~/.torsocks5/relay-access.log"  # JSON Lines 访问日志
+```
+
+限流/连接超限会返回带 `Retry-After` 的 429；访问日志**默认不记录目标域名**，
+只留时间、来源 IP、事件类型与耗时，兼顾排障与隐私。
 
 ### 智能分流
 
@@ -426,6 +445,38 @@ mode = "auto"        # auto | smart | all | off
 `smart` 模式的内置名单（59 条）覆盖 GitHub、Hugging Face、Docker Hub、PyPI、npm、
 crates.io、Ubuntu/Debian 源、arXiv 等；`self-relay` 的 auto 是 `all`（除私有地址全走隧道）。
 匹配是后缀匹配，写 `github.com` 即覆盖 `api.github.com`。
+
+### 多中继负载均衡
+
+同时连多个中继节点，客户端按策略分发流量，坏节点自动熔断切换。
+把单 `url`/`token` 换成 `[[self_relay.nodes]]` 数组即可（旧写法继续兼容）：
+
+```toml
+[self_relay]
+lb_strategy = "weighted_rr"      # weighted_rr | least_conn | split_binding
+circuit_breaker_threshold = 5    # 连续失败 5 次熔断该节点
+circuit_breaker_timeout = 60     # 冷却 60 秒后半开探测
+
+[[self_relay.nodes]]
+url = "ws://127.0.0.1:9052/tsu"
+token = ""
+weight = 3                       # 加权轮询权重
+max_streams = 64
+# bind_hosts = ["github.com"]    # split_binding：github 流量固定走这个节点
+
+[[self_relay.nodes]]
+url = "ws://10.0.0.2:9052/tsu"
+token = ""
+weight = 1
+```
+
+三种策略：
+- **`weighted_rr`** 加权轮询：平滑加权分配，坏节点自动跳过；
+- **`least_conn`** 最少连接 + 延迟感知：连接数优先，同连接数时延迟低的优先；
+- **`split_binding`** 按分流规则绑定：`bind_hosts` 命中的域名固定走指定节点，其余走默认策略。
+
+配套还有服务端健康检查（`health_check_interval`）与客户端熔断（半开探测恢复），
+`torsocks5 routes` 会显示每个节点的状态与并发数。
 
 ## 命令行详解
 
@@ -480,6 +531,10 @@ torsocks5 relay serve --allow-host "example.com"   # 追加白名单
 torsocks5 relay serve --allow-port 8080     # 追加允许端口
 torsocks5 relay serve --max-streams 128     # 单连接并发流上限（默认 64）
 torsocks5 relay serve --tls-cert cert.pem --tls-key key.pem   # 直接跑 wss://
+torsocks5 relay serve --rate-limit-rps 100  # 全局限流：每秒 100 个请求令牌
+torsocks5 relay serve --per-client-rps 10   # 单 IP 限流：每秒 10 个
+torsocks5 relay serve --max-conns-per-ip 16 # 单 IP 最大并发连接
+torsocks5 relay serve --access-log relay.jsonl  # JSON Lines 访问日志
 ```
 
 中继自带 `GET /healthz`（返回协议版本、并发上限等，无需令牌）和
@@ -535,6 +590,11 @@ torsocks5 bridges test "Bridge meek ..."     # 真的启动 tor 验证这条网�
 torsocks5 bridges test "Bridge meek ..." --timeout 300   # 等更久，默认 120 秒
 torsocks5 bridges normalize "..."            # 校验并规范化一行网桥配置
 torsocks5 bridges clipboard                  # 打印剪贴板内容
+torsocks5 bridges fetch                      # 向 tor 官网请求 meek 网桥（默认先 HTTPS 后邮件模板）
+torsocks5 bridges fetch --method https       # 只走 HTTPS API（失败即报错）
+torsocks5 bridges fetch --method email       # 只生成邮件模板
+torsocks5 bridges fetch --email you@example.com  # 邮件方式附上收件邮箱
+torsocks5 bridges fetch --add                # 成功后直接写入 bridges.toml
 ```
 
 网桥保存在 `bridges.toml`；获取方式见[路由 1 · 获取 meek 网桥](#路由-1tor--meek-网桥)。
@@ -618,6 +678,7 @@ url = ""                    # ws://127.0.0.1:9052/tsu 或 wss://你的域名/tsu
 token = ""
 # links = 4
 # max_streams = 64
+# lb_strategy = "weighted_rr"   # 多中继时的负载均衡策略（见「多中继负载均衡」）
 
 [relay]                     # 自建中继服务端（torsocks5 relay serve 读取）
 listen = "127.0.0.1"
@@ -625,6 +686,7 @@ port = 9052
 token = ""                  # 空 + 非回环监听 = 开放代理，会被警告
 allow_all = false           # false 时只放行 allow_hosts 命中的目标
 max_streams = 64
+# rate_limit_rps = 100      # 服务端强化：限流/连接限制/IP 过滤/访问日志（见路由 3 章节）
 
 [tor]
 # binary = ""               # 留空自动探测
@@ -644,12 +706,28 @@ verbose = false             # true = 打印通道吞吐统计，排障很有用
 
 [bridges]
 builtin = false             # 无网桥时是否回落到内置的公开网桥（默认不回落）
+
+[hotreload]                 # 配置热重载：改配置不用重启进程
+enabled = true              # SIGHUP 触发：kill -HUP <pid>
+watch = false               # true = 监听配置文件保存即自动重载
+api_enabled = true          # 本机 HTTP API（仅 127.0.0.1，认证用 proxy 的账号密码）
+# api_port = 9053
+# 触发：curl -u user:pass -X POST http://127.0.0.1:9053/api/config/reload
+
+[logging]                   # 结构化日志：配置 file 后同时写 JSON Lines
+# format = "json"           # json | text；带轮转、gzip 压缩与敏感字段脱敏
+# file = "~/.torsocks5/run.jsonl"
+# level = "info"
 ```
 
 > **关于 `meek_mode`**
 > * `plugin`（默认）：用本项目内置的 Python meek 传输，任何 tor 版本都能用。
 > * `builtin`：用 tor 自己编译进去的 meek（需要你的 tor 带 meek 支持），此时不启动 Python 插件。
 > * `off`：完全不注册传输插件，配合 `direct = true` 使用。
+
+热重载（SIGHUP / HTTP API）、结构化日志与中继访问日志的完整说明见
+[docs/operations.md](docs/operations.md)；多中继负载均衡与服务端强化见
+[docs/routes.md](docs/routes.md)。
 
 ## 在各种应用里使用
 
@@ -704,14 +782,6 @@ torsocks5 install-service schtasks --apply
 schtasks /Run /TN TorSOCKS5
 ```
 
-也可以直接用 Docker：
-
-```bash
-docker build -t torsocks5 .
-docker run -d --name torsocks5 -p 9051:9051 -v torsocks5-data:/data torsocks5
-docker exec torsocks5 torsocks5 doctor
-```
-
 ## 工作原理
 
 ### 分层结构
@@ -757,19 +827,15 @@ torsocks5/
     ├── pt.py              可插拔传输（PT）协议前端
     └── mock_server.py     测试用 meek 服务端（与官方 meek-server 协议等价）
 
-deploy/
-├── cloudflare/            路由 2：Cloudflare Worker（零依赖，wrangler deploy）
-└── deno/                  路由 3：Deno Deploy 中继（Deno.serve + Deno.connect）
-
 docs/
 ├── tunnel-protocol.md     TSU/1 协议规范（Python / Worker / Deno 三端唯一真相源）
 ├── routes.md              三种路由的对比、限制、实测与排障
 └── notes.md               实施笔记：本版加了什么、取舍、没动的与原因
 ```
 
-同一个仓库里的其他文档：`deploy/cloudflare/README.md`（Worker 部署）、
-`deploy/deno/README.md`（Deno Deploy 部署）。要改这个项目，先读
-[CONTRIBUTING.md](CONTRIBUTING.md)（开发环境、项目约定、协议改动的注意事项）。
+同一个仓库里的其他文档：`docs/tunnel-protocol.md`（协议规范）、
+`docs/routes.md`（路由详解）、`docs/notes.md`（实施笔记）。
+要改这个项目，先读 [CONTRIBUTING.md](CONTRIBUTING.md)（开发环境、项目约定、协议改动的注意事项）。
 
 ### meek 隧道协议
 
@@ -879,7 +945,7 @@ __OwningControllerProcess <pid>     # 控制器退出时自动关闭 tor（POSIX
 | 5 MB 下载（不走代理，对照） | 742 KB/s（6.73 s） |
 | 并发 20 路（经隧道访问同一站点） | **20 成功 / 0 失败** |
 | 建流耗时（中继→目标 TCP） | github.com:443 约 1~2 ms；example.com:443 约 1.2 s（取决于对端） |
-| 单元测试 | 130 个用例全绿（其中隧道相关 49 个，全部离线） |
+| 单元测试 | 166 个用例全绿（其中隧道相关 49 个，全部离线） |
 
 结论：**本机中继的隧道开销可以忽略**（798 KB/s vs 742 KB/s，在同一测量的正常波动内），
 瓶颈在中继机器的出口带宽，而不是协议本身。相比 meek 的约 25 KB/s 快了约 30 倍。
@@ -1016,12 +1082,14 @@ python3 torsocks5_cli.py -v run          # 源码直接跑 + 详细日志
 
 ## 开发与测试
 
+版本变更与破坏性更改记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 ```bash
 git clone https://github.com/Mofan2020/TorSOCKS5.git
 cd TorSOCKS5
 pip install -e ".[dev]"
 
-# 单元测试（130 个用例，全部离线、不需要网络与 tor）
+# 单元测试（166 个用例，全部离线、不需要网络与 tor）
 python -m unittest discover -s tests -v
 
 # 离线端到端自检
@@ -1031,17 +1099,8 @@ python torsocks5_cli.py selftest
 ruff check .
 mypy torsocks5
 
-# 中继实现的测试（各自的目录里有说明）
-cd deploy/cloudflare && node --test                  # Cloudflare Worker（54 个用例）
-cd deploy/deno && deno test --allow-net --allow-env --allow-read   # Deno 中继（23 个用例）
-
-# 跨语言互通：用本项目的 Python 客户端连真实运行的 JS/TS 中继，并真的转发一次数据
-python scripts/interop_relay.py \
-    --start "cd deploy/deno && deno run --allow-net --allow-env main.ts" \
-    --port 8791 --token devtoken
-python scripts/interop_relay.py \
-    --start "cd deploy/cloudflare && npx wrangler dev --port 8790 --var TSU_TOKEN:devtoken" \
-    --port 8790 --token devtoken
+# 中继实现测试（自行维护 Worker/Deno 代码时参考 TSU/1 协议规范）
+# python scripts/interop_relay.py --start "your-relay-command" --port 8790 --token devtoken
 
 # 本地打包
 pip install pyinstaller && pyinstaller torsocks5.spec
@@ -1057,17 +1116,12 @@ pip install pyinstaller && pyinstaller torsocks5.spec
 | `tests/test_core.py` | SOCKS5 服务端/客户端、ACL、认证、网桥解析、配置与 TOML 解析器 |
 | `tests/test_tunnel_protocol.py` | TSU/1 帧编解码、地址编码、错误码、目标策略、主机匹配、智能分流、RFC 6455 帧层 |
 | `tests/test_tunnel_e2e.py` | **真起中继做端到端转发**：HTTP 往返、1 MiB 大数据、并发换链路、半关闭、双向背压（1 MiB 上限真刹得住且不丢数据）、未定义 opcode 回 RESET、白名单/私有地址拒绝、SOCKS5 over tunnel |
-| `deploy/cloudflare/test/*.test.mjs` | Worker 形态的中继：编解码、opcode 表、目标策略、错误码分类、PING/PONG（`node --test`，不需要 workerd），共 54 个用例 |
-| `deploy/deno/main_test.ts` | Deno 形态的中继：同一批断言 + 真实 `Deno.connect` 转发、空闲超时、保活失效（23 个用例） |
-| `scripts/interop_relay.py` | **跨语言互通**：Python 客户端 ↔ 真实运行的 Worker / Deno 中继，握手 + 鉴权 + 真转发一次 HTTP 请求 + 策略一致性 |
 
 CI（GitHub Actions）覆盖三平台 × 多 Python 版本、静态检查、全部单元测试、
-CLI 级端到端冒烟、文档一致性校验，以及三类集成测试：
+CLI 级端到端冒烟、文档一致性校验，以及集成测试：
 
 1. 用 mock meek 网桥 + 真实 tor 验证「tor 能通过纯 Python 插件完成 PT 握手」；
-2. 跑 Worker 与 Deno 中继的测试；
-3. 用 Python 客户端做**跨语言互通**验证（Python ↔ Deno 中继为必过项；
-   Python ↔ 本地 workerd 的 Worker 因为要临时下载 wrangler，标记为尽力而为）。
+2. 用 Python 客户端做**跨语言互通**验证（连接自行部署的 TSU/1 兼容中继）。
 
 ## 安全与合规
 

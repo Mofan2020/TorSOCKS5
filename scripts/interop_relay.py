@@ -12,15 +12,10 @@
 
 用法::
 
-    # Deno 中继
+    # 自行实现的中继（参考 docs/tunnel-protocol.md）
     python scripts/interop_relay.py \
-        --start "cd deploy/deno && deno run --allow-net --allow-env main.ts" \
+        --start "your-relay-command --port 8791 --token devtoken" \
         --port 8791 --token devtoken --front-url "ws://127.0.0.1:8791/tsu"
-
-    # Cloudflare Worker（wrangler dev 起本地 workerd）
-    python scripts/interop_relay.py \
-        --start "cd deploy/cloudflare && npx wrangler dev --port 8790" \
-        --port 8790 --token devtoken
 """
 
 from __future__ import annotations

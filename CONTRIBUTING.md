@@ -18,21 +18,13 @@ python scripts/e2e_smoke.py               # CLI 级端到端冒烟：起真中�
 python torsocks5_cli.py selftest          # 离线端到端自检（SOCKS5 + meek + PT 握手）
 ```
 
-改动中继实现（`deploy/`）时还要跑它们各自的测试与跨语言互通：
-
-```bash
-cd deploy/cloudflare && node --test                                   # Worker，54 个用例
-cd deploy/deno && deno test --allow-net --allow-env --allow-read       # Deno，23 个用例
-python scripts/interop_relay.py \
-    --start "cd deploy/deno && deno run --allow-net --allow-env main.ts" \
-    --env TSU_PORT=8791 --env TSU_TOKEN=devtoken --port 8791 --token devtoken
-```
+改动中继实现时请参考 TSU/1 协议规范（`docs/tunnel-protocol.md`）并运行各自的测试与跨语言互通。
 
 ## 项目约定
 
 * **运行期零第三方依赖**。CI 里有一条检查断言 `project.dependencies == []`，
   新增依赖前请先确认标准库做不到。
-* **支持 Python 3.8+**，且要在 Windows / macOS / Linux 上都能跑。
+* **支持 Python 3.10+**，且要在 Windows / macOS / Linux 上都能跑。
   * 不要用 3.9+ 的内建泛型注解（`list[int]`）除非有 `from __future__ import annotations`
   * 不要依赖 `os.sys`（应 `import sys` 后用 `sys.platform`）
   * 输出中文/符号前确保 `torsocks5.log.force_utf8_output()` 已生效
@@ -62,13 +54,12 @@ meek 传输与 Tor 官方的 [pluggable-transports/meek](https://git.torproject.
 
 ### 2. TSU/1 隧道协议（路由 2 / 3）
 
-`docs/tunnel-protocol.md` 是**唯一真相源**，有四个实现同时按它编解码：
-Python 客户端、Python 中继（`torsocks5/tunnel/`）、Cloudflare Worker（`deploy/cloudflare/`）、
-Deno 中继（`deploy/deno/`）。因此：
+`docs/tunnel-protocol.md` 是**唯一真相源**，Python 客户端与 Python 中继（`torsocks5/tunnel/`）按它编解码。
+其它平台实现（Cloudflare Worker、Deno Deploy 等）需自行遵循该规范。因此：
 
-1. **先改协议文档**，再改四个实现；只改一端的 PR 不会被接受。
-2. 四端都要有对应测试（`tests/test_tunnel_*.py`、`deploy/*/…test*`），
-   再加一次跨语言互通：`python scripts/interop_relay.py …`。
+1. **先改协议文档**，再改 Python 实现；只改一端的 PR 不会被接受。
+2. Python 端要有对应测试（`tests/test_tunnel_*.py`），
+   再加一次跨语言互通：`python scripts/interop_relay.py …`（连接自行部署的中继）。
 3. 错误码、opcode、上限（64 KiB 消息 / 32 KiB 分片 / 1 MiB 背压）这些数字
    在文档与代码里必须一致——`check_docs.py` 会核对错误码与帧类型。
 

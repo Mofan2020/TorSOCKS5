@@ -45,6 +45,14 @@ from .protocol import (
     encode_frame,
     frame_name,
 )
+from .ratelimit import (
+    AccessLogger,
+    ConnectionLimiter,
+    IPFilter,
+    RateLimiter,
+    RelayCircuitBreaker,
+    parse_ip_rules,
+)
 from .wsclient import WebSocketError
 from .wsserver import (
     HandshakeError,
@@ -317,6 +325,11 @@ class RelaySession:
         except OSError as exc:
             self.send_open_error(stream_id, ERR_CONNECT_FAILED, str(exc))
             self.server.counters["stream_failed"] += 1
+            self.server.circuit_breaker.record_error()
+            self.server.access_logger.record({
+                "event": "stream_reject", "reason": "connect_failed",
+                "sid": stream_id, "target": "%s:%d" % (host, port),
+            })
             return
         try:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -327,6 +340,11 @@ class RelaySession:
             self.streams[stream_id] = stream
         self.server.counters["streams_total"] += 1
         self.server.counters["streams_active"] += 1
+        self.server.circuit_breaker.record_success()
+        self.server.access_logger.record({
+            "event": "stream_open", "sid": stream_id,
+            "target": "%s:%d" % (host, port),
+        })
         self.send(OP_OPEN_OK, stream_id)
         stream.start()
 
@@ -389,6 +407,26 @@ class RelayServer:
         tls_key: str = "",
         on_log=None,
         log_targets: bool = False,
+        # 增强：限流
+        rate_limit_rps: float = 0.0,
+        rate_limit_burst: Optional[float] = None,
+        per_client_rps: float = 0.0,
+        per_token_rps: float = 0.0,
+        # 增强：连接数限制
+        max_conns_per_ip: int = 0,
+        max_conns_per_token: int = 0,
+        max_conns_total: int = 0,
+        # 增强：IP 过滤
+        ip_whitelist: Optional[Sequence[str]] = None,
+        ip_blacklist: Optional[Sequence[str]] = None,
+        # 增强：熔断
+        circuit_breaker_enabled: bool = False,
+        cb_error_threshold: int = 20,
+        cb_window_seconds: float = 10.0,
+        cb_recovery_seconds: float = 30.0,
+        # 增强：访问日志
+        access_log: str = "",
+        access_log_format: str = "json",
     ) -> None:
         self.host = host
         self.port = int(port)
@@ -410,6 +448,30 @@ class RelayServer:
         self._listener: Optional[socket.socket] = None
         self._stop = threading.Event()
         self._threads: List[threading.Thread] = []
+        # 增强组件
+        self.rate_limiter = RateLimiter(
+            global_rps=rate_limit_rps,
+            global_burst=rate_limit_burst,
+            per_ip_rps=per_client_rps,
+            per_token_rps=per_token_rps,
+        )
+        self.conn_limiter = ConnectionLimiter(
+            max_per_ip=max_conns_per_ip,
+            max_per_token=max_conns_per_token,
+            max_total=max_conns_total,
+        )
+        wl, bl = parse_ip_rules(list(ip_whitelist or []) + ["!" + str(x) for x in (ip_blacklist or [])])
+        self.ip_filter = IPFilter(wl, bl)
+        self.circuit_breaker = RelayCircuitBreaker(
+            error_threshold=cb_error_threshold if circuit_breaker_enabled else 0,
+            window_seconds=cb_window_seconds,
+            recovery_seconds=cb_recovery_seconds,
+        )
+        self.access_logger = AccessLogger(
+            path=access_log,
+            fmt=access_log_format,
+            log_targets=log_targets,
+        )
         self.counters: Dict[str, int] = {
             "sessions_total": 0,
             "sessions_active": 0,
@@ -420,6 +482,10 @@ class RelayServer:
             "bytes_down": 0,
             "rejected_token": 0,
             "rejected_target": 0,
+            "rejected_rate_limit": 0,
+            "rejected_conn_limit": 0,
+            "rejected_ip_filter": 0,
+            "rejected_circuit": 0,
         }
         self.started_at = 0.0
 
@@ -492,18 +558,58 @@ class RelayServer:
             except OSError:
                 pass
             self._listener = None
+        self.access_logger.close()
 
     # ---------------------------------------------------------- 单连接
     def _handle_client(self, sock: socket.socket, peer) -> None:
+        peer_ip = peer[0]
         self.counters["sessions_total"] += 1
         self.counters["sessions_active"] += 1
+
+        # 增强：IP 黑白名单
+        if self.ip_filter.enabled and not self.ip_filter.allowed(peer_ip):
+            self.counters["rejected_ip_filter"] += 1
+            self.log("拒绝 IP %s（不在白名单或命中黑名单）" % peer_ip)
+            self.access_logger.record({"event": "conn_reject", "reason": "ip_filter", "ip": peer_ip})
+            _safe_close(sock)
+            self.counters["sessions_active"] -= 1
+            return
+
+        # 增强：熔断打开时拒绝新连接
+        if self.circuit_breaker.open_:
+            self.counters["rejected_circuit"] += 1
+            self.access_logger.record({"event": "conn_reject", "reason": "circuit_open", "ip": peer_ip})
+            send_http_response(sock, 503, body="熔断中，请稍后重试\n".encode("utf-8"))
+            _safe_close(sock)
+            self.counters["sessions_active"] -= 1
+            return
+
+        # 增强：令牌解析（连接数限制与限流都按令牌统计）
+        token_key = ""
+        # 注意：真正的令牌校验仍在 WebSocket 升级时进行；这里提前解析用于统计
+
+        # 增强：并发连接数限制
+        if self.conn_limiter.enabled:
+            if not self.conn_limiter.acquire(peer_ip, token_key):
+                self.counters["rejected_conn_limit"] += 1
+                self.access_logger.record({"event": "conn_reject", "reason": "conn_limit", "ip": peer_ip})
+                send_http_response(sock, 429, body="连接数超限\n".encode("utf-8"))
+                _safe_close(sock)
+                self.counters["sessions_active"] -= 1
+                return
+
+        def _release_conn_limit() -> None:
+            if self.conn_limiter.enabled:
+                self.conn_limiter.release(peer_ip, token_key)
+
         if self.tls_cert and self.tls_key:
             try:
                 sock = wrap_tls(sock, self.tls_cert, self.tls_key)
             except (OSError, ssl.SSLError) as exc:
-                self.log("TLS 握手失败（%s）：%s" % (peer[0], exc))
+                self.log("TLS 握手失败（%s）：%s" % (peer_ip, exc))
                 _safe_close(sock)
                 self.counters["sessions_active"] -= 1
+                _release_conn_limit()
                 return
         try:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -512,9 +618,10 @@ class RelayServer:
         try:
             request = read_http_request(sock, timeout=10.0)
         except (HandshakeError, OSError) as exc:
-            self.log("握手失败（%s）：%s" % (peer[0], exc))
+            self.log("握手失败（%s）：%s" % (peer_ip, exc))
             _safe_close(sock)
             self.counters["sessions_active"] -= 1
+            _release_conn_limit()
             return
         if request.path == HEALTH_PATH:
             body = json.dumps({
@@ -523,40 +630,73 @@ class RelayServer:
                 "allow_all": self.allow_all,
                 "max_streams": self.max_streams,
                 "uptime": round(time.time() - self.started_at, 1),
+                "rate_limit": self.rate_limiter.enabled,
+                "conn_limit": self.conn_limiter.enabled,
+                "circuit_open": self.circuit_breaker.open_,
             }).encode("utf-8")
             send_http_response(sock, 200, {"Content-Type": "application/json"}, body)
             _safe_close(sock)
             self.counters["sessions_active"] -= 1
+            _release_conn_limit()
             return
         if request.path != self.path:
             send_http_response(sock, 404, body="未知路径\n".encode("utf-8"))
             _safe_close(sock)
             self.counters["sessions_active"] -= 1
+            _release_conn_limit()
             return
         if request.method != "GET" or "websocket" not in request.headers.get("upgrade", "").lower():
             send_http_response(sock, 426, body="需要 WebSocket 升级\n".encode("utf-8"))
             _safe_close(sock)
             self.counters["sessions_active"] -= 1
+            _release_conn_limit()
             return
         if self.token and request.token() != self.token:
             self.counters["rejected_token"] += 1
-            self.log("拒绝令牌错误的连接：%s" % (peer[0],))
+            self.log("拒绝令牌错误的连接：%s" % peer_ip)
             send_http_response(sock, 401, body="令牌错误\n".encode("utf-8"))
             _safe_close(sock)
             self.counters["sessions_active"] -= 1
+            _release_conn_limit()
             return
+
+        # 增强：限流（在令牌校验之后按真实令牌统计）
+        token_key = request.token() if self.token else ""
+        if self.rate_limiter.enabled:
+            allowed, retry_after = self.rate_limiter.check(peer_ip, token_key)
+            if not allowed:
+                self.counters["rejected_rate_limit"] += 1
+                self.access_logger.record({
+                    "event": "conn_reject", "reason": "rate_limit",
+                    "ip": peer_ip, "retry_after": round(retry_after, 2),
+                })
+                send_http_response(sock, 429, {"Retry-After": str(int(retry_after) + 1)},
+                                   ("请求过快，请 %.1f 秒后重试\n" % retry_after).encode("utf-8"))
+                _safe_close(sock)
+                self.counters["sessions_active"] -= 1
+                _release_conn_limit()
+                return
+
         try:
             ws = accept_handshake(sock, request, subprotocol=SUBPROTOCOL)
         except (HandshakeError, OSError, WebSocketError) as exc:
             self.log("升级失败：%s" % exc)
             _safe_close(sock)
             self.counters["sessions_active"] -= 1
+            _release_conn_limit()
             return
+
+        self.access_logger.record({"event": "conn_open", "ip": peer_ip, "token": bool(token_key)})
         session = RelaySession(ws, self)
         try:
             session.run()
         finally:
             self.counters["sessions_active"] -= 1
+            self.access_logger.record({
+                "event": "conn_close", "ip": peer_ip,
+                "duration": round(time.time() - session.last_rx, 1),
+            })
+            _release_conn_limit()
             _safe_close(sock)
 
     # ---------------------------------------------------------- 统计
@@ -566,6 +706,13 @@ class RelayServer:
             "listen": "%s:%d" % (self.host, self.port),
             "uptime": round(time.time() - self.started_at, 1) if self.started_at else 0,
         })
+        if self.rate_limiter.enabled:
+            data["rate_limit_rejected"] = self.rate_limiter.rejected
+        if self.conn_limiter.enabled:
+            data["conn_limit"] = self.conn_limiter.stats()
+        if self.circuit_breaker.enabled:
+            data["circuit_open"] = self.circuit_breaker.open_
+            data["circuit_trips"] = self.circuit_breaker.trips
         return data
 
     def status_line(self) -> str:

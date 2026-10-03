@@ -14,9 +14,6 @@ permissions:
   contents: write
 
 env:
-  # Tor 官方「Little-t tor / expert bundle」版本，发布「打开即用」包时随包附带。
-  # 注意：Tor Project 的下载目录版本号与包内 tor 版本号并不总是一致
-  # （例如 15.0.22 目录里的包内是 tor 0.4.9.12），所以下面用多个候选探测。
   TOR_BUNDLE_VERSION: "0.4.9.12"
   TOR_TBB_VERSION: "15.0.22"
 
@@ -146,14 +143,9 @@ jobs:
           cp -f README.md LICENSE dist/
           cp -f run.sh run.bat dist/ 2>/dev/null || true
           chmod +x dist/run.sh 2>/dev/null || true
-          # 文档与中继部署物一起带上：用户拿到包就能照着 deploy/ 里的说明自己搭中继
           mkdir -p dist/docs
           cp -f docs/*.md dist/docs/ 2>/dev/null || true
-          mkdir -p dist/deploy
-          cp -Rf deploy/cloudflare dist/deploy/ 2>/dev/null || true
-          cp -Rf deploy/deno dist/deploy/ 2>/dev/null || true
-          rm -rf dist/deploy/*/.wrangler dist/deploy/*/node_modules 2>/dev/null || true
-          ls dist/docs dist/deploy 2>/dev/null || true
+          ls dist/docs 2>/dev/null || true
 
       - name: 冒烟测试（版本 + 离线自检 + 插件入口 + 三种路由）
         shell: bash
@@ -282,7 +274,7 @@ jobs:
             ### 下载
 
             每个压缩包都是**打开即用**的完整包：内含 `TorSOCKS5` 可执行程序 +
-            Tor 官方运行时（tor）+ 文档与 `deploy/` 中继部署物，解压后直接运行。
+            Tor 官方运行时（tor）+ 文档，解压后直接运行。
 
             | 平台 | 文件 |
             | --- | --- |
@@ -308,9 +300,6 @@ jobs:
             ./TorSOCKS5 relay token                       # 生成令牌
             ./TorSOCKS5 relay serve --allow-all           # 起中继（默认 127.0.0.1:9052）
             ./TorSOCKS5 run --route self-relay --relay-url ws://127.0.0.1:9052/tsu --relay-token <令牌>
-
-            # 2c. Cloudflare Worker 中转：先按 deploy/cloudflare/README.md 部署，然后
-            ./TorSOCKS5 run --route cf-relay --relay-url wss://<你的 Worker 域名>/tsu --relay-token <令牌>
             ```
 
             然后把应用代理设为 `socks5h://127.0.0.1:9051`（用 `socks5h://`

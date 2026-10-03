@@ -52,18 +52,43 @@ builtin_direct = true
 # direct_hosts = ["intranet.example"]
 
 [cf_relay]
-# 路由方式 2：先部署 deploy/cloudflare/ 里的 Worker，再把地址填到这里。
+# 路由方式 2：自行部署 Cloudflare Worker 后填入地址。
 url = ""
 token = ""
 # links = 4         # 并发 WS 链路数
 # max_streams = 6   # Cloudflare 免费版硬限制：单个请求最多 6 条并发出站连接
 
+# 多中继负载均衡（配置了 [[cf_relay.nodes]] 节点数组时生效）：
+# lb_strategy = "weighted_rr"    # weighted_rr=加权轮询 | least_conn=最少连接+延迟感知
+#                                # split_binding=按分流规则绑定中继
+# circuit_breaker_threshold = 5  # 连续失败达到该值则熔断该节点
+# circuit_breaker_timeout = 60   # 熔断后冷却秒数，期间自动降级到其它节点
+
 [self_relay]
-# 路由方式 3：torsocks5 relay serve（本机/VPS），或 deploy/deno/ 部署到 Deno Deploy。
+# 路由方式 3：torsocks5 relay serve（本机/VPS）。
 url = ""
 token = ""
 # links = 4
 # max_streams = 64
+
+# 多中继：改用节点数组即可同时连多个中继，自动负载均衡；
+# 单 url/token 的旧写法继续可用（只有一个节点时效果等价）。
+# lb_strategy = "weighted_rr"
+# circuit_breaker_threshold = 5
+# circuit_breaker_timeout = 60
+#
+# [[self_relay.nodes]]
+# url = "ws://127.0.0.1:9052/tsu"
+# token = ""
+# weight = 3                     # 加权轮询权重（默认 1）
+# max_streams = 64
+# health_check_interval = 30     # 健康检查间隔（秒）
+# bind_hosts = ["github.com"]    # split_binding 策略：命中后缀的流量固定走此节点
+#
+# [[self_relay.nodes]]
+# url = "ws://10.0.0.2:9052/tsu"
+# token = ""
+# weight = 1
 
 [relay]
 # 自建中继服务端（`torsocks5 relay serve` 读取这一段）
@@ -76,6 +101,32 @@ allow_all = false
 # allow_hosts = ["github.com", "pypi.org"]
 # allow_ports = [443, 80, 22, 9418]
 max_streams = 64
+
+# ---------------- 服务端强化（0 或留空 = 关闭，全部可选） ----------------
+# 限流（令牌桶，平滑限流允许受控突发）
+# rate_limit_rps = 0          # 全局每秒令牌数
+# rate_limit_burst = 0        # 桶容量（默认等于 rate）
+# per_client_rps = 0          # 单客户端 IP 每秒令牌数
+# per_token_rps = 0           # 单令牌每秒令牌数
+
+# 并发连接数限制
+# max_conns_per_ip = 0        # 单 IP 最大并发连接
+# max_conns_per_token = 0     # 单令牌最大并发连接
+# max_conns_total = 0         # 总并发上限
+
+# IP 过滤（支持 CIDR；黑名单优先，白名单非空时只放行白名单）
+# ip_whitelist = ["192.168.0.0/16"]
+# ip_blacklist = ["10.1.2.3"]
+
+# 熔断：窗口内连续出站失败过多时短暂拒绝新连接，避免拖垮上游
+# circuit_breaker_enabled = false
+# cb_error_threshold = 20     # 窗口内错误数阈值
+# cb_window_seconds = 10      # 统计窗口（秒）
+# cb_recovery_seconds = 30    # 熔断持续时间（秒）
+
+# 结构化访问日志（JSON Lines；默认不记录目标域名，保护隐私）
+# access_log = "~/.torsocks5/relay-access.log"
+# access_log_format = "json"  # json | text
 
 [tor]
 # tor 可执行文件路径，留空自动探测（PATH、Tor Browser、Homebrew、常见安装位置）
@@ -130,3 +181,28 @@ verbose = false
 
 # 没有任何网桥时，是否回落到内置的公开 meek 网桥（可能已失效，仅作保底）
 builtin = true
+
+[hotreload]
+# 配置热重载：SIGHUP 信号 + 本机 HTTP API 双重触发，改配置不用重启进程。
+enabled = true             # 发送 SIGHUP 重载（kill -HUP <pid>）
+watch = false              # 额外监听配置文件 mtime，保存即自动重载
+api_enabled = true         # 本机 HTTP API（只监听 127.0.0.1）
+# api_host = "127.0.0.1"
+# api_port = 9053
+# api_path = "/api/config/reload"
+# API 用 proxy.username / proxy.password 做 Basic Auth（未设置凭据时一律拒绝）：
+#   curl -u user:pass http://127.0.0.1:9053/api/config/reload          # 查看状态
+#   curl -u user:pass -X POST http://127.0.0.1:9053/api/config/reload  # 触发重载
+# 可热更：超时/连接数/认证等立即生效；路由与分流变更热切换（已有连接不受影响）
+
+[logging]
+# 结构化日志：配置 file 后，日志在写终端的同时追加一份到文件。
+# JSON Lines 格式（每行一个 JSON 对象），带大小+时间轮转、gzip 压缩与敏感信息脱敏。
+# format = "json"           # json | text
+# level = "info"            # debug | info | warn | error
+# file = "~/.torsocks5/run.jsonl"
+# max_size_mb = 100         # 单文件大小上限
+# max_files = 10            # 保留的历史文件数
+# max_age_days = 30         # 按天轮转
+# compress = true           # 轮转后 gzip 压缩
+# redact = []               # 额外要脱敏的字段名（token/password 等已默认脱敏）

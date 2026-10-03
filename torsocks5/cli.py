@@ -27,6 +27,7 @@ import urllib.request
 from typing import List, Optional, Tuple
 
 from . import __version__, hostrules
+from . import bridge_fetch as bridge_fetch_mod
 from . import bridges as bridges_mod
 from . import config as config_mod
 from . import log as log_mod
@@ -90,9 +91,48 @@ def load_bridges(config: config_mod.Config, extra: Optional[List[str]] = None) -
     return store
 
 
+def _setup_structured_logging(config: config_mod.Config, logger: log_mod.Logger):
+    """配置了 ``[logging].file`` 时，把日志同时写入结构化文件（JSON Lines）。
+
+    文件带大小+时间轮转、压缩与敏感信息脱敏；失败只告警不影响主流程。
+    返回 StructuredLogger（供测试/关闭），未配置时返回 None。
+    """
+    path = str(config.get("logging.file") or "").strip()
+    if not path:
+        return None
+    try:
+        from .logging_structured import StructuredLogger
+    except ImportError as exc:  # pragma: no cover - 标准库缺失的极端情况
+        logger.warn("结构化日志不可用: %s" % exc)
+        return None
+    level_map = {"debug": 10, "info": 20, "warn": 30, "warning": 30, "error": 40}
+    try:
+        structured = StructuredLogger(
+            level=str(config.get("logging.level") or "info"),
+            log_file=path,
+            fmt=str(config.get("logging.format") or "json"),
+            max_size_mb=int(config.get("logging.max_size_mb")),
+            max_files=int(config.get("logging.max_files")),
+            max_age_days=int(config.get("logging.max_age_days")),
+            compress=_bool(config.get("logging.compress")),
+            redact_keys=set(config.get("logging.redact") or []) or None,
+            console_output=False,
+        )
+    except (OSError, ValueError) as exc:
+        logger.warn("结构化日志启动失败（%s）: %s" % (path, exc))
+        return None
+
+    def _sink(level_name: str, message: str) -> None:
+        structured.logger.log(level_map.get(level_name, 20), message)
+
+    logger.set_structured(_sink, owner=structured)
+    return structured
+
+
 # --------------------------------------------------------------------- run
 def cmd_run(args: argparse.Namespace, logger: log_mod.Logger) -> int:
     config = config_mod.Config.load(args.config)
+    _setup_structured_logging(config, logger)
     listen = args.listen or config.get("proxy.listen")
     port = int(args.port or config.get("proxy.port"))
     username = config.get("proxy.username") or None
@@ -158,6 +198,58 @@ def cmd_run(args: argparse.Namespace, logger: log_mod.Logger) -> int:
 
     show_ready_banner(logger, bound, username, socks_server, route)
 
+    # ---------------------------------------------------------------- 热重载
+    # SIGHUP 信号 + HTTP API 双重触发；监听到的路由引用放字典里以便热切换后同步
+    current_route = {"route": route}
+    hot_manager = None
+    hot_api = None
+    if _bool(config.get("hotreload.enabled")) or _bool(config.get("hotreload.api_enabled")):
+        from . import hotreload as hotreload_mod
+
+        def _apply_runtime(changes) -> None:
+            """把能直接生效的配置刷到运行中的 SOCKS5 服务器上。"""
+            for change in changes:
+                key, value = change["key"], change["new"]
+                try:
+                    if key == "proxy.max_connections":
+                        socks_server.max_connections = int(value)
+                    elif key == "proxy.idle_timeout":
+                        socks_server.idle_timeout = float(value)
+                    elif key == "proxy.connect_timeout":
+                        socks_server.connect_timeout = float(value)
+                    elif key == "proxy.verbose":
+                        socks_server.verbose = _bool(value)
+                    elif key == "proxy.username":
+                        socks_server.username = str(value) or None
+                    elif key == "proxy.password":
+                        socks_server.password = str(value)
+                    elif key in ("proxy.listen", "proxy.port"):
+                        logger.warn("监听地址/端口变更需重启生效")
+                except (TypeError, ValueError) as exc:
+                    logger.warn("热更新 %s 失败: %s" % (key, exc))
+
+        hot_manager = hotreload_mod.HotReloadManager(
+            config,
+            logger,
+            route,
+            options,
+            get_connector=lambda: socks_server.connector,
+            set_connector=lambda c: setattr(socks_server, "connector", c),
+            get_upstream_socks=lambda: socks_server.upstream,
+            set_upstream_socks=lambda u: setattr(socks_server, "upstream", u),
+            get_split_router=lambda: None,
+            set_split_router=lambda _router: None,
+            set_route=lambda r: current_route.__setitem__("route", r),
+            apply_runtime=_apply_runtime,
+        )
+        if _bool(config.get("hotreload.enabled")):
+            hot_manager.install_signal_handler()
+            if _bool(config.get("hotreload.watch")):
+                hot_manager.start_watcher()
+            logger.info("配置热重载: 发送 %s 触发（或改配置文件后等待轮询）"
+                        % (config.get("hotreload.signal") or "SIGHUP"))
+        hot_api = hotreload_mod.start_reload_api(hot_manager)
+
     stop_event = threading.Event()
 
     def shutdown(_signum=None, _frame=None) -> None:
@@ -178,7 +270,14 @@ def cmd_run(args: argparse.Namespace, logger: log_mod.Logger) -> int:
     finally:
         logger.info("正在关闭…")
         socks_server.shutdown()
-        route.stop()
+        if hot_manager is not None:
+            hot_manager.stop_watcher()
+        if hot_api is not None:
+            try:
+                hot_api.shutdown()
+            except OSError:
+                pass
+        current_route["route"].stop()
     logger.ok("已退出。")
     return 0
 
@@ -444,6 +543,9 @@ def cmd_bridges(args: argparse.Namespace, logger: log_mod.Logger) -> int:
     if action == "test":
         return _bridges_test(args, logger, config)
 
+    if action == "fetch":
+        return bridge_fetch_mod.cmd_bridges_fetch(args, logger)
+
     logger.error("未知的子命令: %s" % action)
     return 2
 
@@ -675,7 +777,7 @@ def cmd_routes(args: argparse.Namespace, logger: log_mod.Logger) -> int:
         logger.plain("  tor-meek   : 未找到 tor —— torsocks5 fetch-tor 或系统安装 tor")
     cf_url = str(config.get("cf_relay.url") or "")
     logger.plain("  cf-relay   : %s" % (("已配置 %s" % cf_url) if cf_url
-                                       else "未配置 —— 先部署 deploy/cloudflare/，再把地址写进 [cf_relay]"))
+                                       else "未配置 —— 自行部署 Cloudflare Worker 后，把地址写进 [cf_relay]"))
     relay_url = str(config.get("self_relay.url") or "")
     logger.plain("  self-relay : %s" % (("已配置 %s" % relay_url) if relay_url
                                         else "未配置 —— 本机跑 torsocks5 relay serve 即可，见 docs/routes.md"))
@@ -699,6 +801,7 @@ def cmd_relay(args: argparse.Namespace, logger: log_mod.Logger) -> int:
         return 2
 
     config = config_mod.Config.load(args.config)
+    _setup_structured_logging(config, logger)
     listen = args.listen or str(config.get("relay.listen"))
     port = int(args.port or config.get("relay.port"))
     token = args.token or str(config.get("relay.token") or "")
@@ -727,6 +830,26 @@ def cmd_relay(args: argparse.Namespace, logger: log_mod.Logger) -> int:
         tls_key=args.tls_key or "",
         on_log=logger.info,
         log_targets=bool(args.verbose),
+        # 增强：限流
+        rate_limit_rps=float(args.rate_limit_rps or config.get("relay.rate_limit_rps") or 0),
+        rate_limit_burst=float(config.get("relay.rate_limit_burst") or 0) or None,
+        per_client_rps=float(args.per_client_rps or config.get("relay.per_client_rps") or 0),
+        per_token_rps=float(config.get("relay.per_token_rps") or 0),
+        # 增强：连接限制
+        max_conns_per_ip=int(args.max_conns_per_ip or config.get("relay.max_conns_per_ip") or 0),
+        max_conns_per_token=int(config.get("relay.max_conns_per_token") or 0),
+        max_conns_total=int(config.get("relay.max_conns_total") or 0),
+        # 增强：IP 过滤
+        ip_whitelist=list(config.get("relay.ip_whitelist") or []),
+        ip_blacklist=list(config.get("relay.ip_blacklist") or []),
+        # 增强：熔断
+        circuit_breaker_enabled=config_mod.as_bool(config.get("relay.circuit_breaker_enabled")),
+        cb_error_threshold=int(config.get("relay.cb_error_threshold")),
+        cb_window_seconds=float(config.get("relay.cb_window_seconds")),
+        cb_recovery_seconds=float(config.get("relay.cb_recovery_seconds")),
+        # 增强：访问日志
+        access_log=args.access_log or str(config.get("relay.access_log") or ""),
+        access_log_format=str(config.get("relay.access_log_format") or "json"),
     )
     bound = server.bind()
     host, real_port = bound[0], server.port
@@ -910,6 +1033,13 @@ def build_parser() -> argparse.ArgumentParser:
     relay.add_argument("--max-streams", type=int, default=0, help="单连接并发流上限，默认 64")
     relay.add_argument("--tls-cert", default="", help="TLS 证书（给中继套上 wss://）")
     relay.add_argument("--tls-key", default="", help="TLS 私钥")
+    relay.add_argument("--rate-limit-rps", type=float, default=0.0,
+                       help="全局请求限流（每秒令牌数，0=不限）")
+    relay.add_argument("--per-client-rps", type=float, default=0.0,
+                       help="单客户端 IP 限流（每秒令牌数，0=不限）")
+    relay.add_argument("--max-conns-per-ip", type=int, default=0,
+                       help="单 IP 最大并发连接数（0=不限）")
+    relay.add_argument("--access-log", default="", help="访问日志文件路径（JSON Lines）")
     relay.add_argument("--allow-private", action="store_true",
                        help=argparse.SUPPRESS)  # 仅供本机测试：允许连接私有地址
     relay.set_defaults(func=cmd_relay)
@@ -928,11 +1058,15 @@ def build_parser() -> argparse.ArgumentParser:
     tunnel.set_defaults(func=cmd_tunnel)
 
     bridges = sub.add_parser("bridges", help="网桥管理")
-    bridges.add_argument("action", choices=["list", "add", "rm", "import", "clipboard", "normalize", "test"])
+    bridges.add_argument("action", choices=["list", "add", "rm", "import", "clipboard", "normalize", "test", "fetch"])
     bridges.add_argument("line", nargs="*", help="网桥行（add/normalize/test 可用）")
     bridges.add_argument("--file", default="", help="从文件导入")
     bridges.add_argument("--url", default="", help="从 URL 导入")
-    bridges.add_argument("--timeout", type=int, default=120, help="test 的等待秒数")
+    bridges.add_argument("--timeout", type=int, default=120, help="test/fetch 的等待秒数")
+    bridges.add_argument("--transport", default="meek", choices=["meek", "meek_lite", "meek_azure"], help="fetch: 请求的网桥类型")
+    bridges.add_argument("--method", default="auto", choices=["auto", "https", "email"], help="fetch: 获取方式（默认 auto 先试 HTTPS，失败再给邮件模板）")
+    bridges.add_argument("--email", default="", help="fetch: 邮件方式时填入你的邮箱（可选）")
+    bridges.add_argument("--add", action="store_true", help="fetch: 直接添加获取到的网桥到配置")
     bridges.set_defaults(func=cmd_bridges)
 
     config_parser = sub.add_parser("config", help="配置管理")
@@ -1017,17 +1151,33 @@ builtin_direct = true
 # proxy_hosts = ["example.com"]
 # direct_hosts = ["intranet.example"]
 
-# 路由 2：Cloudflare Worker 中转（部署步骤见 deploy/cloudflare/README.md）
+# 路由 2：Cloudflare Worker 中转（自行部署 Worker 后填入地址）
 [cf_relay]
 url = ""
 token = ""
 # links = 4          # 并发 WS 链路数（每条链路最多 6 条流）
 # max_streams = 6    # 平台硬限制，不要调大
+# 多中继负载均衡（配置了 [[cf_relay.nodes]] 时生效）
+# lb_strategy = "weighted_rr"   # weighted_rr | least_conn | split_binding
+# circuit_breaker_threshold = 5 # 连续失败熔断阈值
+# circuit_breaker_timeout = 60  # 熔断冷却秒数
 
-# 路由 3：自建 / 多平台中继（torsocks5 relay serve，或 deploy/deno/）
+# 路由 3：自建 / 多平台中继（torsocks5 relay serve）
 [self_relay]
 url = ""
 token = ""
+# 多中继：配置节点数组后自动启用负载均衡（单 url/token 仍兼容）
+# lb_strategy = "weighted_rr"   # weighted_rr=加权轮询 least_conn=最少连接+延迟 split_binding=按分流绑定
+# [[self_relay.nodes]]
+# url = "ws://127.0.0.1:9052/tsu"
+# token = ""
+# weight = 3                    # 加权轮询的权重
+# max_streams = 64
+# bind_hosts = ["github.com"]   # split_binding 策略：命中该域名的流量固定走这个节点
+# [[self_relay.nodes]]
+# url = "ws://10.0.0.2:9052/tsu"
+# token = ""
+# weight = 1
 
 # 自建中继服务端（torsocks5 relay serve 读取这里）
 [relay]
@@ -1038,6 +1188,35 @@ allow_all = false
 max_streams = 64
 # allow_hosts = ["github.com", "pypi.org"]
 # allow_ports = [443, 80, 22, 9418]
+# 服务端强化（0 或留空 = 关闭）
+# rate_limit_rps = 0        # 全局限流（每秒令牌数）
+# per_client_rps = 0        # 单 IP 限流
+# max_conns_per_ip = 0      # 单 IP 最大并发连接
+# ip_whitelist = []         # 只允许这些 CIDR/IP（黑名单用 ! 前缀或 ip_blacklist）
+# ip_blacklist = []
+# circuit_breaker_enabled = false  # 连续出站失败过多时熔断
+# access_log = ""           # 访问日志路径（JSON Lines，可审计不含目标域名）
+
+# 配置热重载：SIGHUP 信号 + 本机 HTTP API 双重触发
+[hotreload]
+enabled = true             # SIGHUP 触发重载
+watch = false              # 额外监听配置文件变化自动重载
+api_enabled = true         # HTTP API（仅监听 127.0.0.1，认证用 proxy.username/password）
+# api_host = "127.0.0.1"
+# api_port = 9053
+# api_path = "/api/config/reload"
+# 触发：kill -HUP <pid>  或  curl -u user:pass -X POST http://127.0.0.1:9053/api/config/reload
+
+# 结构化日志：配置 file 后同时写 JSON Lines（轮转+压缩+脱敏）
+[logging]
+# format = "json"           # json | text
+# level = "info"
+# file = "~/.torsocks5/run.jsonl"
+# max_size_mb = 100
+# max_files = 10
+# max_age_days = 30
+# compress = true
+# redact = []               # 额外脱敏的字段名
 
 [tor]
 # binary = ""            # 留空自动探测

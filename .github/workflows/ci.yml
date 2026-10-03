@@ -50,7 +50,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.8", "3.12"]
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -143,47 +143,6 @@ jobs:
       - name: 清理
         if: always()
         run: pkill -f mock_server || true; pkill -f "tor -f" || true
-
-  relays:
-    name: 中继实现（Worker / Deno）与跨语言互通
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: Cloudflare Worker 单元测试（node --test，不需要 workerd）
-        working-directory: deploy/cloudflare
-        run: node --test
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: "v2.x"
-      - name: Deno 中继单元测试
-        working-directory: deploy/deno
-        run: deno test --allow-net --allow-env --allow-read
-      - name: 跨语言互通：Python 客户端 ↔ Deno 中继（真转发一次数据）
-        env:
-          PYTHONIOENCODING: utf-8
-        run: |
-          python scripts/interop_relay.py \
-            --start "cd deploy/deno && deno run --allow-net --allow-env main.ts" \
-            --env TSU_PORT=8791 --env TSU_TOKEN=devtoken \
-            --port 8791 --token devtoken --timeout 90
-      - name: 跨语言互通：Python 客户端 ↔ Cloudflare Worker（本地 workerd）
-        # 这一步要先用 npx 下载 wrangler（约一分钟）并起 workerd，
-        # 受网络影响较大，所以标记为「尽力而为」；本地已验证通过：
-        #   python scripts/interop_relay.py --start "cd deploy/cloudflare && npx wrangler dev --port 8790 --var TSU_TOKEN:devtoken" --port 8790 --token devtoken
-        continue-on-error: true
-        env:
-          PYTHONIOENCODING: utf-8
-        run: |
-          python scripts/interop_relay.py \
-            --start "cd deploy/cloudflare && npx --yes wrangler@4 dev --port 8790 --var TSU_TOKEN:devtoken" \
-            --port 8790 --token devtoken --timeout 240
 
   security:
     name: 依赖与许可检查

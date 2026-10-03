@@ -76,6 +76,9 @@ class Logger:
         self.use_color = supports_color(self.stream) if color is None else color
         self.lock = threading.Lock()
         self.file = None
+        #: 结构化日志汇（可选）：收到 ``(level_name, message)``
+        self._structured = None
+        self._structured_owner = None
         if log_file:
             try:
                 directory = os.path.dirname(os.path.abspath(log_file))
@@ -101,6 +104,16 @@ class Logger:
             if self.file is not None:
                 self.file.write("%s %s %s\n" % (stamp, level_name.upper(), message))
                 self.file.flush()
+            if self._structured is not None:
+                try:
+                    self._structured(level_name, message)
+                except Exception:  # noqa: BLE001 - 结构化日志失败不影响主流程
+                    pass
+
+    def set_structured(self, sink, owner=None) -> None:
+        """挂接结构化日志汇（如 JSON Lines 文件），``owner`` 关闭时一并关闭。"""
+        self._structured = sink
+        self._structured_owner = owner
 
     def debug(self, message: str) -> None:
         self._emit("debug", message, "debug")
@@ -132,6 +145,13 @@ class Logger:
             except OSError:
                 pass
             self.file = None
+        if self._structured_owner is not None:
+            try:
+                self._structured_owner.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._structured_owner = None
+            self._structured = None
 
 
 def banner(logger: Logger, text: str) -> None:

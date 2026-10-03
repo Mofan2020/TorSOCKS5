@@ -126,7 +126,7 @@ Deno 中继四个实现都照它写。CI 里 `scripts/check_docs.py` 会校验�
 ## 怎么验证这次改动
 
 ```bash
-# 1. 单元测试（130 个，全部离线、不需要网络与 tor）
+# 1. 单元测试（166 个，全部离线、不需要网络与 tor）
 python -m unittest discover -s tests -v
 
 # 2. CLI 级端到端冒烟（起两个真进程，经 SOCKS5 取数据）
@@ -135,17 +135,8 @@ python scripts/e2e_smoke.py
 # 3. 文档 ↔ 代码一致性（含负向测试，证明校验器真的会拦）
 python scripts/check_docs.py && python scripts/check_docs.py --selftest
 
-# 4. 中继实现的测试
-cd deploy/cloudflare && node --test                                  # 54 个用例
-cd deploy/deno && deno test --allow-net --allow-env --allow-read      # 23 个用例
-
-# 5. 跨语言互通（Python 客户端 ↔ 真实运行的 JS/TS 中继，真转发一次数据）
-python scripts/interop_relay.py \
-    --start "cd deploy/deno && deno run --allow-net --allow-env main.ts" \
-    --port 8791 --token devtoken
-python scripts/interop_relay.py \
-    --start "cd deploy/cloudflare && npx wrangler dev --port 8790 --var TSU_TOKEN:devtoken" \
-    --port 8790 --token devtoken
+# 4. 跨语言互通测试（连接自行部署的 TSU/1 兼容中继）
+# python scripts/interop_relay.py --start "your-relay-command" --port 8790 --token devtoken
 
 # 6. 手动实测一条真实链路（需要网络）
 python torsocks5_cli.py relay serve --allow-all &

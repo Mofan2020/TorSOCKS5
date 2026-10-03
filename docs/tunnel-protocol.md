@@ -143,8 +143,6 @@ WS 消息边界即帧边界：**一个 WS 二进制消息 = 恰好一个 TSU 帧
 
 每个实现都要有测试证明「帧编解码 + 端到端转发」真实可用，而不是只测辅助函数：
 
-* Python：`tests/test_tunnel_protocol.py`（编解码）、`tests/test_tunnel_e2e.py`（真实 TCP echo 往返）。
-* Worker：`deploy/cloudflare/test/*.test.mjs`（`node --test`），至少覆盖编解码、白名单、错误码。
-* Deno：`deploy/deno/main_test.ts`（`deno test`），至少覆盖编解码 + 真实 `Deno.connect` 转发。
-* 跨语言互操作：CI 里用 Python 客户端 `torsocks5 tunnel probe` 连**真实运行的** Deno 中继，
-  以及用 `wrangler dev` 起来的 Worker（本地 workerd）。
+* Python（参考实现）：`tests/test_tunnel_protocol.py`（编解码）、`tests/test_tunnel_e2e.py`（真实 TCP echo 往返）。
+* 其它平台实现（Worker、Deno、Go 等）：需自行编写测试覆盖编解码、白名单、错误码、真实连接转发。
+* 跨语言互操作：用 Python 客户端 `torsocks5 tunnel probe` 连**真实运行的**中继验证互通性。

@@ -17,16 +17,15 @@ from __future__ import annotations
 
 from .tunnel_base import TunnelRoute
 
-MISSING_CONFIG_HINT = """路由 cf-relay 需要一个已部署的 Cloudflare Worker：
-  1) 部署本仓库自带的 Worker（零依赖、无需构建）：
-       cd deploy/cloudflare && npx wrangler deploy
-       npx wrangler secret put TSU_TOKEN     # 自己定一个随机字符串
-  2) 把地址与令牌写进配置：
+MISSING_CONFIG_HINT = """路由 cf-relay 需要一个已部署的 Cloudflare Worker（自行维护）：
+  1) 部署 Cloudflare Worker（参考 TSU/1 协议规范：docs/tunnel-protocol.md）
+  2) 设置 Worker 环境变量 TSU_TOKEN（随机字符串）
+  3) 把地址与令牌写进配置：
        [cf_relay]
        url = "wss://<你的-worker>.workers.dev/tsu"
-       token = "<上面设置的 TSU_TOKEN>"
-  3) 或者临时用命令行：torsocks5 run --route cf-relay --relay-url wss://... --relay-token ...
-  完整步骤与限制见 deploy/cloudflare/README.md"""
+       token = "<TSU_TOKEN>"
+  4) 或者临时用命令行：torsocks5 run --route cf-relay --relay-url wss://... --relay-token ...
+  ⚠️ 注意：CF 条款 2.2.1(j) 禁止用作 VPN/代理，账号有封禁风险"""
 
 
 class CfRelayRoute(TunnelRoute):

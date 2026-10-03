@@ -296,6 +296,10 @@ DEFAULTS: List[Tuple[str, Any]] = [
     ("cf_relay.front", ""),
     ("cf_relay.insecure", False),
     ("cf_relay.token_in_header", False),
+    # 多中继负载均衡（有 [[cf_relay.nodes]] 时生效）
+    ("cf_relay.lb_strategy", "weighted_rr"),
+    ("cf_relay.circuit_breaker_threshold", 5),
+    ("cf_relay.circuit_breaker_timeout", 60.0),
     # 路由 3：自建 / 多平台中继
     ("self_relay.url", ""),
     ("self_relay.token", ""),
@@ -304,6 +308,12 @@ DEFAULTS: List[Tuple[str, Any]] = [
     ("self_relay.front", ""),
     ("self_relay.insecure", False),
     ("self_relay.token_in_header", False),
+    # 多中继负载均衡（有 [[self_relay.nodes]] 时生效）
+    # 策略可选：weighted_rr（加权轮询）/ least_conn（最少连接+延迟感知）
+    #          / split_binding（按分流规则绑定中继）
+    ("self_relay.lb_strategy", "weighted_rr"),
+    ("self_relay.circuit_breaker_threshold", 5),
+    ("self_relay.circuit_breaker_timeout", 60.0),
     # ``torsocks5 relay serve`` 自建中继服务端
     ("relay.listen", "127.0.0.1"),
     ("relay.port", 9052),
@@ -316,6 +326,39 @@ DEFAULTS: List[Tuple[str, Any]] = [
     ("relay.path", "/tsu"),
     ("relay.tls_cert", ""),
     ("relay.tls_key", ""),
+    # 中继增强：限流 / 连接限制 / IP 过滤 / 熔断 / 访问日志（0 或空 = 关闭）
+    ("relay.rate_limit_rps", 0),
+    ("relay.rate_limit_burst", 0),
+    ("relay.per_client_rps", 0),
+    ("relay.per_token_rps", 0),
+    ("relay.max_conns_per_ip", 0),
+    ("relay.max_conns_per_token", 0),
+    ("relay.max_conns_total", 0),
+    ("relay.ip_whitelist", []),
+    ("relay.ip_blacklist", []),
+    ("relay.circuit_breaker_enabled", False),
+    ("relay.cb_error_threshold", 20),
+    ("relay.cb_window_seconds", 10.0),
+    ("relay.cb_recovery_seconds", 30.0),
+    ("relay.access_log", ""),
+    ("relay.access_log_format", "json"),
+    # 配置热重载（SIGHUP 信号 + HTTP API 双重触发）
+    ("hotreload.enabled", True),
+    ("hotreload.signal", "SIGHUP"),
+    ("hotreload.watch", False),          # 额外监听配置文件 mtime 变化
+    ("hotreload.api_enabled", True),     # 本机 HTTP API（127.0.0.1）
+    ("hotreload.api_host", "127.0.0.1"),
+    ("hotreload.api_port", 9053),
+    ("hotreload.api_path", "/api/config/reload"),
+    # 结构化日志（[logging] 段）
+    ("logging.format", "json"),
+    ("logging.level", "info"),
+    ("logging.file", ""),
+    ("logging.max_size_mb", 100),
+    ("logging.max_files", 10),
+    ("logging.max_age_days", 30),
+    ("logging.compress", True),
+    ("logging.redact", []),
     ("tor.binary", ""),
     ("tor.socks_port", 0),
     ("tor.control_port", 0),
