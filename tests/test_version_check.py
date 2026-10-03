@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import tempfile
 import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 from torsocks5 import version_check as vc
 
@@ -193,6 +195,67 @@ class VersionCheckTest(unittest.TestCase):
                                   % server.server_address[1])
         self.addCleanup(os.environ.pop, vc.ENV_URL, None)
         self.assertEqual(vc.fetch_latest_tag(timeout=5), "v8.8.8")
+
+
+class FetchSslTest(unittest.TestCase):
+    """GitHub 相关请求默认关闭 SSL 证书校验（加速器/代理下证书异常普遍）。"""
+
+    def _fetch(self, **kwargs):
+        captured = {}
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b'{"tag_name": "v9.9.9"}')
+
+        def fake_urlopen(request, timeout=None, context=None):
+            captured["context"] = context
+            captured["timeout"] = timeout
+            return response
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            tag = vc.fetch_latest_tag(**kwargs)
+        return tag, captured
+
+    def test_default_disables_ssl_verification(self):
+        tag, captured = self._fetch()
+        self.assertEqual(tag, "v9.9.9")
+        context = captured["context"]
+        self.assertIsNotNone(context)
+        self.assertEqual(context.verify_mode, ssl.CERT_NONE)
+        self.assertFalse(context.check_hostname)
+
+    def test_verify_ssl_true_uses_default_verified_context(self):
+        tag, captured = self._fetch(verify_ssl=True)
+        self.assertEqual(tag, "v9.9.9")
+        # context=None → urlopen 使用系统默认的严格校验上下文
+        self.assertIsNone(captured["context"])
+
+    def test_config_default_disables_verify(self):
+        from torsocks5 import config as config_mod
+        defaults = dict(config_mod.DEFAULTS)
+        self.assertIn("version_check.verify_ssl", defaults)
+        self.assertIs(defaults["version_check.verify_ssl"], False)
+
+    def test_start_passes_verify_ssl_and_timeout_to_default_fetcher(self):
+        vc.reset()
+        captured: dict = {}
+
+        def fake_fetch(*, timeout, verify_ssl):
+            captured.update(timeout=timeout, verify_ssl=verify_ssl)
+            return "v9.9.9"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = os.path.join(tmp, "vc.json")
+            with mock.patch.object(vc, "fetch_latest_tag",
+                                   side_effect=fake_fetch):
+                started = vc.start("1.0.0", cache_path=cache,
+                                   timeout=7.5, verify_ssl=True)
+                self.assertTrue(started)
+                deadline = time.time() + 5
+                while time.time() < deadline and "verify_ssl" not in captured:
+                    time.sleep(0.05)
+        vc.reset()
+        self.assertTrue(captured.get("verify_ssl"))
+        self.assertEqual(captured.get("timeout"), 7.5)
 
 
 if __name__ == "__main__":

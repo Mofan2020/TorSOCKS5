@@ -264,6 +264,7 @@ def cmd_run(args: argparse.Namespace, logger: log_mod.Logger) -> int:
         __version__,
         enabled=_bool(config.get("version_check.enabled")),
         interval_hours=24.0 if _vc_interval is None else float(_vc_interval),
+        verify_ssl=_bool(config.get("version_check.verify_ssl")),
         on_result=_on_version_result,
     )
 
@@ -1272,6 +1273,7 @@ enabled = false
 [version_check]
 enabled = true
 # interval_hours = 24      # 结果缓存时长
+verify_ssl = false         # GitHub 请求默认关闭 SSL 证书校验（加速器/代理常见）
 
 [tor]
 # binary = ""            # 留空自动探测

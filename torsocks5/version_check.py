@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import threading
 import time
 import urllib.request
@@ -108,14 +109,25 @@ def _save_cache(path: str, latest: str, current: Optional[str]) -> None:
 
 
 # --------------------------------------------------------------------- 网络请求
-def fetch_latest_tag(timeout: float = DEFAULT_TIMEOUT) -> str:
-    """请求最新发布标签（GitHub JSON 或纯文本镜像）。"""
+def fetch_latest_tag(timeout: float = DEFAULT_TIMEOUT,
+                     verify_ssl: bool = False) -> str:
+    """请求最新发布标签（GitHub JSON 或纯文本镜像）。
+
+    ``verify_ssl`` 默认 **False（关闭证书校验）**：GitHub 相关请求默认跳过
+    SSL 认证——国内经加速器/代理访问 GitHub 时证书异常非常普遍，校验只会
+    让功能在最需要它的网络环境里失效。需要严格校验时显式传 True。
+    """
     url = os.environ.get(ENV_URL) or GITHUB_LATEST_URL
     request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json",
         "User-Agent": "TorSOCKS5-version-check",
     })
-    with urllib.request.urlopen(request, timeout=timeout) as resp:
+    context = None
+    if not verify_ssl:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    with urllib.request.urlopen(request, timeout=timeout, context=context) as resp:
         body = resp.read().decode("utf-8", "replace")
     try:
         payload = json.loads(body)
@@ -160,6 +172,7 @@ def start(
     cache_path: Optional[str] = None,
     interval_hours: float = 24.0,
     timeout: float = DEFAULT_TIMEOUT,
+    verify_ssl: bool = False,
     on_result: Optional[Callable[[Dict[str, Any]], None]] = None,
     fetcher: Optional[Callable[[], str]] = None,
 ) -> bool:
@@ -192,8 +205,9 @@ def start(
                 "cache_path": cache_path,
                 "interval_hours": interval_hours,
                 "timeout": timeout,
+                "verify_ssl": verify_ssl,
                 "on_result": on_result,
-                "fetcher": fetcher or fetch_latest_tag,
+                "fetcher": fetcher,
             },
             daemon=True,
             name="torsocks5-version-check",
@@ -204,16 +218,20 @@ def start(
 
 
 def _run(*, current: str, cache_path: str, interval_hours: float,
-         timeout: float, on_result: Optional[Callable[[Dict[str, Any]], None]],
-         fetcher: Callable[[], str]) -> None:
+         timeout: float, verify_ssl: bool,
+         on_result: Optional[Callable[[Dict[str, Any]], None]],
+         fetcher: Optional[Callable[[], str]]) -> None:
     """线程体：缓存命中用缓存，否则发请求；一切异常收敛为 error 字段。"""
+    do_fetch = fetcher or (
+        lambda: fetch_latest_tag(timeout=timeout, verify_ssl=verify_ssl)
+    )
     try:
         cached = _load_cache(cache_path, interval_hours)
         if cached is not None:
             latest = str(cached["latest"])
             checked_at = cached.get("checked_at")
         else:
-            latest = fetcher()
+            latest = do_fetch()
             checked_at = time.time()
             _save_cache(cache_path, latest, current)
         with _lock:

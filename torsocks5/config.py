@@ -360,6 +360,8 @@ DEFAULTS: List[Tuple[str, Any]] = [
     # 版本更新检查（启动后台查 GitHub Releases，失败静默、可关闭）
     ("version_check.enabled", True),
     ("version_check.interval_hours", 24),
+    # GitHub 相关请求默认关闭 SSL 证书校验（加速器/代理下证书异常很常见）
+    ("version_check.verify_ssl", False),
 
     # 结构化日志（[logging] 段）
     ("logging.format", "json"),

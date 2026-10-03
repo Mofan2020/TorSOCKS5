@@ -512,7 +512,8 @@ torsocks5 run --web                    # 开 Web 管理面板（127.0.0.1:9054�
 退出码：`0` 正常退出 · `2` 参数/配置错误 · `3` 路由启动失败 · `4` 就绪超时。
 
 **Web 管理面板**：仪表盘（连接/流量/路由状态）、在线切换路由、网桥增删、
-配置编辑（保存即热重载）、实时日志流。默认关闭，用 `--web` 或配置
+配置编辑（保存即热重载）、实时日志流，右上角**配置向导**可分 5 步完成初始化
+（环境检测 → 基础配置 → 出口与网桥 → 开机自启 → 完成）。默认关闭，用 `--web` 或配置
 `[web] enabled = true` 开启；账号密码写在配置文件里（密码留空则启动时随机
 生成并打印到日志）。纯标准库服务 + CDN 前端（Tailwind / Alpine / htmx），
 零构建零运行期依赖。详见[docs/operations.md](docs/operations.md)。
@@ -729,6 +730,7 @@ enabled = false
 
 [version_check]             # 版本更新检查：启动时后台查 GitHub Releases
 enabled = true              # 3 秒超时、结果缓存 24 小时、网络失败完全静默
+verify_ssl = false          # GitHub 请求默认关闭 SSL 校验（加速器/代理下证书异常常见）
 # interval_hours = 24
 
 [logging]                   # 结构化日志：配置 file 后同时写 JSON Lines
@@ -748,7 +750,9 @@ enabled = true              # 3 秒超时、结果缓存 24 小时、网络失�
 
 **版本更新检查**：`run` 启动时在后台查询 GitHub Releases（3 秒超时、结果缓存
 24 小时），发现新版本会在日志里打一行提示、Web 面板仪表盘显示横幅；网络失败
-完全静默、绝不影响正常使用，`[version_check] enabled = false` 可关闭。
+完全静默、绝不影响正常使用，`[version_check] enabled = false` 可关闭。GitHub
+相关请求默认关闭 SSL 证书校验（`verify_ssl = false`——国内经加速器/代理访问
+时证书异常很普遍，校验反而会让功能不可用）。
 
 ## 在各种应用里使用
 
@@ -966,7 +970,7 @@ __OwningControllerProcess <pid>     # 控制器退出时自动关闭 tor（POSIX
 | 5 MB 下载（不走代理，对照） | 742 KB/s（6.73 s） |
 | 并发 20 路（经隧道访问同一站点） | **20 成功 / 0 失败** |
 | 建流耗时（中继→目标 TCP） | github.com:443 约 1~2 ms；example.com:443 约 1.2 s（取决于对端） |
-| 单元测试 | 190 个用例全绿（其中隧道相关 49 个，全部离线） |
+| 单元测试 | 216 个用例全绿（其中隧道相关 49 个，全部离线） |
 
 结论：**本机中继的隧道开销可以忽略**（798 KB/s vs 742 KB/s，在同一测量的正常波动内），
 瓶颈在中继机器的出口带宽，而不是协议本身。相比 meek 的约 25 KB/s 快了约 30 倍。
@@ -1110,7 +1114,7 @@ git clone https://github.com/Mofan2020/TorSOCKS5.git
 cd TorSOCKS5
 pip install -e ".[dev]"
 
-# 单元测试（190 个用例，全部离线、不需要网络与 tor）
+# 单元测试（216 个用例，全部离线、不需要网络与 tor）
 python -m unittest discover -s tests -v
 
 # 离线端到端自检

@@ -210,6 +210,9 @@ password = ""
 # 网络失败完全静默，不影响正常使用）
 enabled = true
 # interval_hours = 24      # 结果缓存时长（0 = 每次启动都查）
+# GitHub 请求默认关闭 SSL 证书校验（国内经加速器/代理访问时证书异常很常见）；
+# 需要严格校验时改 true。
+verify_ssl = false
 
 [logging]
 # 结构化日志：配置 file 后，日志在写终端的同时追加一份到文件。

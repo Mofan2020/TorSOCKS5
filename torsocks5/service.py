@@ -5,22 +5,35 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from . import config as config_mod
 
 LAUNCH_LABEL = "com.torsocks5.agent"
 
 
-def _executable_command(port: int) -> Tuple[str, List[str]]:
-    """返回用于启动服务的 (可执行文件, 参数列表)。"""
+def _executable_command(port: int, config_path: str = "") -> Tuple[str, List[str]]:
+    """返回用于启动服务的 (可执行文件, 参数列表)。
+
+    ``config_path`` 与默认配置路径不同时自动追加 ``--config``，
+    保证开机自启用的就是面板里编辑的那份配置。
+    """
+    prefix: List[str] = []
+    if config_path:
+        try:
+            different = os.path.abspath(config_path) != os.path.abspath(
+                config_mod.default_config_path())
+        except (OSError, ValueError):
+            different = True
+        if different:
+            prefix = ["--config", config_path]
     if getattr(sys, "frozen", False):
-        return sys.executable, ["run", "--port", str(port)]
+        return sys.executable, prefix + ["run", "--port", str(port)]
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     entry = os.path.join(root, "torsocks5_cli.py")
     if os.path.exists(entry):
-        return sys.executable, [entry, "run", "--port", str(port)]
-    return sys.executable, ["-m", "torsocks5", "run", "--port", str(port)]
+        return sys.executable, prefix + [entry, "run", "--port", str(port)]
+    return sys.executable, prefix + ["-m", "torsocks5", "run", "--port", str(port)]
 
 
 def _env_lines() -> List[str]:
@@ -31,8 +44,8 @@ def _env_lines() -> List[str]:
 
 
 # --------------------------------------------------------------------- systemd
-def systemd_unit(port: int) -> str:
-    exe, args = _executable_command(port)
+def systemd_unit(port: int, config_path: str = "") -> str:
+    exe, args = _executable_command(port, config_path)
     exec_line = " ".join([exe] + args)
     return "\n".join(
         [
@@ -77,8 +90,8 @@ def install_systemd(args, logger, apply: bool) -> int:
 
 
 # --------------------------------------------------------------------- launchd
-def launchd_plist(port: int) -> str:
-    exe, args = _executable_command(port)
+def launchd_plist(port: int, config_path: str = "") -> str:
+    exe, args = _executable_command(port, config_path)
     arg_lines = "\n".join("        <string>%s</string>" % item for item in args)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -158,6 +171,55 @@ def detect_kind() -> str:
     if os.name == "nt":
         return "schtasks"
     return "systemd"
+
+
+def startup_plan(port: int, config_path: str = "") -> Dict[str, Any]:
+    """给 Web 面板配置向导：按平台生成开机自启方案与分步安装指引。"""
+    kind = detect_kind()
+    if kind == "launchd":
+        path = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LAUNCH_LABEL)
+        return {
+            "kind": kind,
+            "title": "launchd（macOS 用户代理）",
+            "filename": os.path.basename(path),
+            "content": launchd_plist(port, config_path),
+            "steps": [
+                "把上面内容保存到 %s" % path,
+                "执行: launchctl load -w %s" % path,
+                "查看日志: tail -f ~/Library/Logs/torsocks5.log",
+            ],
+            "uninstall": "launchctl unload -w %s && rm %s" % (path, path),
+        }
+    if kind == "systemd":
+        path = os.path.expanduser("~/.config/systemd/user/torsocks5.service")
+        return {
+            "kind": kind,
+            "title": "systemd 用户单元（Linux）",
+            "filename": os.path.basename(path),
+            "content": systemd_unit(port, config_path),
+            "steps": [
+                "把上面内容保存到 %s" % path,
+                "执行: systemctl --user daemon-reload",
+                "启用: systemctl --user enable --now torsocks5",
+                "查看日志: journalctl --user -u torsocks5 -f",
+            ],
+            "uninstall": "systemctl --user disable --now torsocks5 && rm %s" % path,
+        }
+    exe, args = _executable_command(port, config_path)
+    command = "schtasks /Create /F /SC ONLOGON /TN TorSOCKS5 /TR %s" % (
+        subprocess.list2cmdline([exe] + args))
+    return {
+        "kind": kind,
+        "title": "计划任务（Windows 登录时启动）",
+        "filename": "TorSOCKS5.cmd",
+        "content": command,
+        "steps": [
+            "在终端执行上面这条命令（开机登录时自动启动）",
+            "立即启动: schtasks /Run /TN TorSOCKS5",
+            "如果希望不依赖登录即可启动，把 /SC ONLOGON 换成 /SC ONSTART 并以管理员运行",
+        ],
+        "uninstall": "schtasks /Delete /TN TorSOCKS5 /F",
+    }
 
 
 def install_service(args, logger) -> int:

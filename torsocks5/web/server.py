@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import queue
 import secrets
 import threading
@@ -18,12 +19,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
+from .. import bridge_fetch as bridge_fetch_mod
 from .. import bridges as bridges_mod
 from .. import config as config_mod
 from .. import log as log_mod
 from .. import routes as routes_mod
+from .. import service as service_mod
 from .. import version_check as version_check_mod
 from . import html as html_mod
+from . import wizard as wizard_mod
 from .logstream import LogStream
 
 
@@ -158,6 +162,14 @@ class WebPanel:
             h.send_json({"entries": self.log_stream.history(limit=limit, since=since)})
         elif key == ("GET", "/api/logs/stream"):
             self._serve_sse(h)
+        elif key == ("GET", "/api/wizard/env"):
+            h.send_json(self._api_wizard_env())
+        elif key == ("POST", "/api/wizard/config"):
+            h.send_json(self._api_wizard_config(h))
+        elif key == ("POST", "/api/wizard/fetch"):
+            h.send_json(self._api_wizard_fetch(h))
+        elif key == ("GET", "/api/wizard/service"):
+            h.send_json(self._api_wizard_service())
         else:
             h.send_json({"error": "not found"}, code=404)
 
@@ -324,6 +336,131 @@ class WebPanel:
                 pass
             self._bridge_test = {"running": False, "last_result": result}
 
+    # ------------------------------------------------------------------ 配置向导
+    def _api_wizard_env(self) -> Dict[str, Any]:
+        socks = self._get_socks_server()
+        listen = ""
+        if socks is not None and hasattr(socks, "stats_dict"):
+            listen = str(socks.stats_dict().get("listen") or "")
+        route = self._get_route()
+        return wizard_mod.env_checks(
+            self.config,
+            route_name=route.name if route is not None else "",
+            listen=listen,
+            bridge_count=len(self._load_store().active()),
+        )
+
+    def _api_wizard_config(self, h: Any) -> Dict[str, Any]:
+        blocked = self._check_origin(h)
+        if blocked is not None:
+            return blocked
+        payload = h.read_json() or {}
+        updates: Dict[str, Dict[str, Any]] = {}
+        for section in ("proxy", "cf_relay", "self_relay"):
+            kv = payload.get(section)
+            if isinstance(kv, dict):
+                clean = {str(k): v for k, v in kv.items()
+                         if v is not None and v != ""}
+                if clean:
+                    updates[section] = clean
+        if not updates:
+            return {"success": False, "error": "没有要保存的修改"}
+        proxy_kv = updates.get("proxy", {})
+        if "port" in proxy_kv:
+            try:
+                port = int(proxy_kv["port"])
+            except (TypeError, ValueError):
+                return {"success": False, "error": "端口必须是数字"}
+            if not 1 <= port <= 65535:
+                return {"success": False, "error": "端口必须在 1-65535 之间"}
+            proxy_kv["port"] = port
+        if "route" in proxy_kv and proxy_kv["route"] not in routes_mod.route_names():
+            return {"success": False, "error": "未知路由 %r" % proxy_kv["route"]}
+        # 读现有文本（文件不存在则空），就地更新保留注释；校验通过才原子写入
+        path = self.config.path
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except FileNotFoundError:
+            text = ""
+        except OSError as exc:
+            return {"success": False, "error": "读取配置失败: %s" % exc}
+        new_text = wizard_mod.apply_updates(text, updates)
+        error = wizard_mod.validate_or_error(new_text)
+        if error is not None:
+            return {"success": False, "error": error}
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                handle.write(new_text)
+            os.replace(tmp, path)
+        except OSError as exc:
+            return {"success": False, "error": "写入失败: %s" % exc}
+        parsed = config_mod.loads(new_text)
+        restart_payload = any(k in ("listen", "port") for k in proxy_kv)
+        hot = self._get_hot_manager()
+        if hot is None:
+            self.config.data = parsed
+            warnings = ["热重载未启用，重启进程后生效"]
+            if restart_payload:
+                warnings.append("监听地址/端口变更需要重启生效")
+            return {"success": True, "reloaded": False, "changes": [],
+                    "restart_required": restart_payload, "warnings": warnings}
+        result = hot.reload(force=True)
+        if not result.get("success"):
+            return {"success": True, "reloaded": False,
+                    "restart_required": restart_payload, "changes": [],
+                    "error": "文件已保存，但热重载失败: %s" % result.get("error")}
+        changes = result.get("changes") or []
+        restart_required = any(
+            isinstance(change, dict)
+            and change.get("key") in ("proxy.listen", "proxy.port")
+            for change in changes)
+        return {"success": True, "reloaded": True, "changes": changes,
+                "warnings": result.get("warnings") or [],
+                "restart_required": restart_required}
+
+    def _api_wizard_fetch(self, h: Any) -> Dict[str, Any]:
+        blocked = self._check_origin(h)
+        if blocked is not None:
+            return blocked
+        payload = h.read_json() or {}
+        transport = str(payload.get("transport") or "meek")
+        fetch_error = None
+        try:
+            lines = bridge_fetch_mod.fetch_bridges_via_https(
+                transport=transport, timeout=15.0, logger=self.logger)
+        except Exception as exc:  # noqa: BLE001 - 网络异常类型不统一
+            lines, fetch_error = [], str(exc)
+        if lines:
+            valid, errors = bridge_fetch_mod.validate_and_normalize_bridges(lines)
+            store = self._load_store()
+            added = 0
+            for bridge in valid:
+                if store.add(bridge):
+                    added += 1
+            if valid:
+                store.save()
+            self.logger.ok("向 tor 官网请求到 %d 条网桥（新增 %d 条）"
+                           % (len(lines), added))
+            return {"success": True, "method": "https", "found": len(lines),
+                    "added": added, "count": len(store.active()),
+                    "errors": errors}
+        _, guidance = bridge_fetch_mod.fetch_bridges_via_email(transport=transport)
+        return {"success": False, "method": "https", "found": 0,
+                "fallback": "email", "guidance": guidance,
+                "manual_url": "https://bridges.torproject.org",
+                "error": fetch_error}
+
+    def _api_wizard_service(self) -> Dict[str, Any]:
+        try:
+            port = int(self.config.get("proxy.port") or 9051)
+        except (TypeError, ValueError):
+            port = 9051
+        plan = service_mod.startup_plan(port, self.config.path)
+        plan["success"] = True
+        return plan
+
     def _api_config_get(self) -> Dict[str, Any]:
         path = self.config.path
         try:
@@ -350,7 +487,6 @@ class WebPanel:
         # 2) 原子写入
         path = self.config.path
         try:
-            import os
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as handle:
                 handle.write(content)

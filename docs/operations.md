@@ -134,6 +134,7 @@ password = ""               # 留空则启动时随机生成并打印到日志
 | `/bridges` 网桥 | 列表 / 添加 / 删除网桥（落盘 `bridges.toml`） |
 | `/config` 配置 | TOML 编辑器：先语法校验再原子写入，保存后自动热重载 |
 | `/logs` 日志 | SSE 实时日志流（含启动历史回填），支持暂停滚动与清屏 |
+| `/wizard` 配置向导 | 右上角「配置向导」按钮进入，分 5 步完成初始化：环境检测 → 基础配置（就地改写、保留注释）→ 出口与网桥（一键请求/手动添加）→ 开机自启（生成 launchd/systemd/计划任务配置）→ 完成 |
 
 - **认证**：Basic Auth，凭据取 `[web] username/password`；未配置密码时启动随机生成；
   写操作额外校验 `Origin`（跨站 POST 一律 403，防 CSRF）。
@@ -152,7 +153,12 @@ password = ""               # 留空则启动时随机生成并打印到日志
 [version_check]
 enabled = true         # 关闭后完全不发请求
 interval_hours = 24    # 结果缓存时长（0 = 每次启动都查）
+verify_ssl = false     # GitHub 请求默认关闭 SSL 证书校验
 ```
+
+- **SSL 默认关闭**：GitHub 相关请求默认跳过证书校验——国内经加速器/代理访问时
+  证书异常非常普遍，校验只会让检查在最需要它的网络环境里失效；需要严格校验时
+  设 `verify_ssl = true`。
 
 - **提示位置**：发现新版本 → 启动日志打一行 `发现新版本 vX.Y.Z（当前 a.b.c）：<发布页>`；
   Web 面板仪表盘显示琥珀色横幅（`/api/status` 的 `update` 字段）。
@@ -169,6 +175,7 @@ interval_hours = 24    # 结果缓存时长（0 = 每次启动都查）
 ```bash
 python -m unittest tests.test_hotreload        # 热重载：diff / 重建判定 / API 认证
 python -m unittest tests.test_web              # 面板：认证 / 页面 / API / CSRF / SSE
+python -m unittest tests.test_wizard           # 配置向导：环境检测 / 就地保存 / 自启 / API
 python -m unittest tests.test_version_check    # 版本检查：比较 / 缓存 / 失败静默
 python -m unittest tests.test_phase1           # 限流 / 连接限制 / IP 过滤 / 熔断 / 负载均衡
 ```
